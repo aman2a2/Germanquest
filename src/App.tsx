@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react';
-import { BookOpen, Brain, Check, ChevronLeft, ChevronRight, CircleHelp, Cloud, Download, Flame, GraduationCap, Home, Layers3, Link2, ListFilter, LogIn, LogOut, RefreshCw, RotateCcw, Search, Settings2, Sparkles, Target, Timer, Trophy, User, X } from 'lucide-react';
+import { BookOpen, Brain, Check, ChevronLeft, ChevronRight, CircleHelp, Cloud, Download, Flame, GraduationCap, History, Home, Layers3, Link2, ListFilter, LogIn, LogOut, RefreshCw, RotateCcw, Search, Settings2, Sparkles, Target, Timer, Trophy, User, X } from 'lucide-react';
 import { cloudEnabled, supabase } from './lib/supabase';
 import { starterWords, type VocabWord } from './lib/words';
 
@@ -7,9 +7,22 @@ type Tab = 'Home' | 'Learn' | 'Play' | 'Progress';
 type QuizType = 'de-en' | 'en-de' | 'grammar' | 'match' | 'topic-exam' | 'challenge';
 type Result = { wordId: string; correct: boolean; date: string };
 type Review = { wordId: string; dueAt: string; interval: number; correctCount: number; lastCorrect?: boolean };
+type ChallengeRecord = {
+  id: string;
+  duration: number;
+  correct: number;
+  wrong: number;
+  total: number;
+  date: string;
+};
+
 const STORE_KEY = 'wortweise-v1';
+const CHALLENGE_HISTORY_KEY = 'wortweise-challenge-history-v1';
 const todayKey = () => new Date().toISOString().slice(0, 10);
 const readStore = () => { try { return JSON.parse(localStorage.getItem(STORE_KEY) || '{}'); } catch { return {}; } };
+const readChallengeHistory = (): ChallengeRecord[] => {
+  try { return JSON.parse(localStorage.getItem(CHALLENGE_HISTORY_KEY) || '[]'); } catch { return []; }
+};
 const csvCell = (s: string) => `"${s.replaceAll('"','""')}"`;
 const exportCsv = (words: VocabWord[]) => ['german,english,topic,type,plural,example,exampleTranslation', ...words.map(w => [w.german,w.english,w.topic,w.type||'',w.plural||'',w.example||'',w.exampleTranslation||''].map(csvCell).join(','))].join('\n');
 
@@ -67,6 +80,8 @@ export default function App() {
   const [timeLeft, setTimeLeft] = useState(60);
   const [challengeTotalAnswered, setChallengeTotalAnswered] = useState(0);
   const [timeDeltaBadge, setTimeDeltaBadge] = useState<string | null>(null);
+  const [challengeRecords, setChallengeRecords] = useState<ChallengeRecord[]>(readChallengeHistory);
+  const [showHistoryModal, setShowHistoryModal] = useState(false);
 
   // Topic Exam Selection State
   const [selectedExamTopics, setSelectedExamTopics] = useState<string[]>([]);
@@ -94,6 +109,10 @@ export default function App() {
   }, [words, results, reviews, goal]);
 
   useEffect(() => {
+    localStorage.setItem(CHALLENGE_HISTORY_KEY, JSON.stringify(challengeRecords));
+  }, [challengeRecords]);
+
+  useEffect(() => {
     if (!supabase) return;
     supabase.auth.getSession().then(({ data }) => setUserEmail(data.session?.user.email || null));
     const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => setUserEmail(session?.user.email || null));
@@ -118,7 +137,7 @@ export default function App() {
       setTimeLeft(prev => {
         if (prev <= 1) {
           clearInterval(interval);
-          setQuizDone(true);
+          finishChallenge();
           return 0;
         }
         return prev - 1;
@@ -126,7 +145,25 @@ export default function App() {
     }, 1000);
 
     return () => clearInterval(interval);
-  }, [isPlaying, quizType, quizDone]);
+  }, [isPlaying, quizType, quizDone, quizScore, challengeTotalAnswered, challengeDuration]);
+
+  function finishChallenge() {
+    setQuizDone(true);
+    const correctCount = quizScore;
+    const wrongCount = Math.max(0, challengeTotalAnswered - correctCount);
+    
+    // Save record to last 5 history
+    const newRecord: ChallengeRecord = {
+      id: crypto.randomUUID ? crypto.randomUUID() : String(Date.now()),
+      duration: challengeDuration,
+      correct: correctCount,
+      wrong: wrongCount,
+      total: challengeTotalAnswered,
+      date: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', month: 'short', day: 'numeric' })
+    };
+
+    setChallengeRecords(prev => [newRecord, ...prev].slice(0, 5));
+  }
 
   useEffect(() => {
     function handleClickOutside(e: MouseEvent) {
@@ -333,7 +370,6 @@ export default function App() {
       baseWords = pool.length ? pool : [...words];
     }
 
-    // For Challenge mode generate a large randomized pool
     const targetCount = quizType === 'challenge' ? Math.max(100, words.length * 5) : size;
     const activeWords: VocabWord[] = [];
     while (activeWords.length < targetCount) {
@@ -667,6 +703,89 @@ export default function App() {
             )}
           </div>
         </header>
+
+        {/* History Modal for Challenge Mode */}
+        {showHistoryModal && (
+          <div style={{
+            position: 'fixed',
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            backgroundColor: 'rgba(0,0,0,0.5)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 1000,
+            padding: '16px'
+          }}>
+            <div style={{
+              background: '#ffffff',
+              borderRadius: '16px',
+              maxWidth: '460px',
+              width: '100%',
+              padding: '24px',
+              boxShadow: '0 20px 25px -5px rgba(0,0,0,0.2)',
+              position: 'relative'
+            }}>
+              <button
+                onClick={() => setShowHistoryModal(false)}
+                style={{ position: 'absolute', top: '16px', right: '16px', border: 'none', background: 'transparent', cursor: 'pointer' }}
+              >
+                <X size={18} />
+              </button>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
+                <div className="soft-icon"><History size={20} /></div>
+                <h2 style={{ fontSize: '18px', margin: 0, fontWeight: 700 }}>Last 5 Challenge Records</h2>
+              </div>
+              <p style={{ color: '#6b7280', fontSize: '13px', marginBottom: '16px' }}>
+                Your most recent speed challenge sessions:
+              </p>
+
+              {challengeRecords.length === 0 ? (
+                <div style={{ padding: '24px 0', textAlign: 'center', color: '#9ca3af', fontSize: '14px' }}>
+                  No games played yet. Complete a challenge to see your score history!
+                </div>
+              ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                  {challengeRecords.map((rec, idx) => {
+                    const acc = rec.total ? Math.round((rec.correct / rec.total) * 100) : 0;
+                    return (
+                      <div
+                        key={rec.id || idx}
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'space-between',
+                          padding: '12px 14px',
+                          borderRadius: '10px',
+                          background: '#f9fafb',
+                          border: '1px solid #e5e7eb'
+                        }}
+                      >
+                        <div>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '3px' }}>
+                            <strong style={{ fontSize: '14px' }}>⏱️ {rec.duration}s Mode</strong>
+                            <span style={{ fontSize: '11px', color: '#6b7280' }}>• {rec.date}</span>
+                          </div>
+                          <div style={{ fontSize: '13px', display: 'flex', gap: '12px' }}>
+                            <span style={{ color: '#10b981', fontWeight: 600 }}>✓ {rec.correct} correct</span>
+                            <span style={{ color: '#ef4444', fontWeight: 600 }}>✗ {rec.wrong} wrong</span>
+                          </div>
+                        </div>
+
+                        <div style={{ textAlign: 'right' }}>
+                          <strong style={{ fontSize: '16px', color: 'var(--color-primary)' }}>{rec.correct} pts</strong>
+                          <div style={{ fontSize: '11px', color: '#6b7280' }}>{acc}% Acc</div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          </div>
+        )}
 
         {showAuthModal && (
           <div style={{
@@ -1035,7 +1154,7 @@ export default function App() {
                     </div>
                   )}
 
-                  <div className="setup-controls">
+                  <div className="setup-controls" style={{ flexWrap: 'wrap', justifyContent: 'center' }}>
                     {/* Time Selector for Challenge Mode */}
                     {!quizDone && quizType === 'challenge' && (
                       <label>Starting Time
@@ -1066,8 +1185,20 @@ export default function App() {
                       onClick={() => startSession(quizSize)}
                       disabled={quizType === 'topic-exam' && !availableTopics.length}
                     >
-                      <RotateCcw size={16} />{quizDone ? 'Play again' : 'Start challenge'} <ChevronRight size={16} />
+                      <RotateCcw size={16} />{quizDone ? 'Play again' : 'Start session'} <ChevronRight size={16} />
                     </button>
+
+                    {/* Button to view last 5 challenge records */}
+                    {quizType === 'challenge' && (
+                      <button
+                        type="button"
+                        className="button secondary"
+                        onClick={() => setShowHistoryModal(true)}
+                        style={{ display: 'flex', alignItems: 'center', gap: '6px' }}
+                      >
+                        <History size={16} /> Last 5 Games Record
+                      </button>
+                    )}
                   </div>
                 </div>
               ) : quizType === 'match' ? (
@@ -1162,7 +1293,6 @@ export default function App() {
                 <div className="panel quiz-panel">
                   <div className="quiz-topline" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%' }}>
                     {quizType === 'challenge' ? (
-                      /* Challenge Timer & Live Score Bar */
                       <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
                         <div style={{
                           display: 'flex',
