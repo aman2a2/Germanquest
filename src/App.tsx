@@ -1,10 +1,10 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react';
-import { BookOpen, Brain, Check, ChevronLeft, ChevronRight, CircleHelp, Cloud, Download, Flame, GraduationCap, Home, Layers3, Link2, ListFilter, LogIn, LogOut, RefreshCw, RotateCcw, Search, Settings2, Sparkles, Target, Trophy, User, X } from 'lucide-react';
+import { BookOpen, Brain, Check, ChevronLeft, ChevronRight, CircleHelp, Cloud, Download, Flame, GraduationCap, Home, Layers3, Link2, ListFilter, LogIn, LogOut, RefreshCw, RotateCcw, Search, Settings2, Sparkles, Target, Timer, Trophy, User, X } from 'lucide-react';
 import { cloudEnabled, supabase } from './lib/supabase';
 import { starterWords, type VocabWord } from './lib/words';
 
 type Tab = 'Home' | 'Learn' | 'Play' | 'Progress';
-type QuizType = 'de-en' | 'en-de' | 'grammar' | 'match' | 'topic-exam';
+type QuizType = 'de-en' | 'en-de' | 'grammar' | 'match' | 'topic-exam' | 'challenge';
 type Result = { wordId: string; correct: boolean; date: string };
 type Review = { wordId: string; dueAt: string; interval: number; correctCount: number; lastCorrect?: boolean };
 const STORE_KEY = 'wortweise-v1';
@@ -45,6 +45,7 @@ export default function App() {
   const [goal, setGoal] = useState<number>(() => readStore().goal || 10);
   const [userEmail, setUserEmail] = useState<string | null>(null);
 
+  // Auth state
   const [authEmail, setAuthEmail] = useState('');
   const [authPassword, setAuthPassword] = useState('');
   const [authMessage, setAuthMessage] = useState('');
@@ -60,6 +61,12 @@ export default function App() {
   const [quizDone, setQuizDone] = useState(false);
   const [quizType, setQuizType] = useState<QuizType>('de-en');
   const [isPlaying, setIsPlaying] = useState(false);
+
+  // Challenge Mode State
+  const [challengeDuration, setChallengeDuration] = useState(60);
+  const [timeLeft, setTimeLeft] = useState(60);
+  const [challengeTotalAnswered, setChallengeTotalAnswered] = useState(0);
+  const [timeDeltaBadge, setTimeDeltaBadge] = useState<string | null>(null);
 
   // Topic Exam Selection State
   const [selectedExamTopics, setSelectedExamTopics] = useState<string[]>([]);
@@ -80,6 +87,7 @@ export default function App() {
 
   const [syncing, setSyncing] = useState(false);
   const autoNextTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const badgeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     localStorage.setItem(STORE_KEY, JSON.stringify({ words, results, reviews, goal }));
@@ -99,8 +107,26 @@ export default function App() {
   useEffect(() => {
     return () => {
       if (autoNextTimer.current) clearTimeout(autoNextTimer.current);
+      if (badgeTimer.current) clearTimeout(badgeTimer.current);
     };
   }, []);
+
+  // Challenge Mode Countdown Timer
+  useEffect(() => {
+    if (!isPlaying || quizType !== 'challenge' || quizDone) return;
+    const interval = setInterval(() => {
+      setTimeLeft(prev => {
+        if (prev <= 1) {
+          clearInterval(interval);
+          setQuizDone(true);
+          return 0;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+
+    return () => clearInterval(interval);
+  }, [isPlaying, quizType, quizDone]);
 
   useEffect(() => {
     function handleClickOutside(e: MouseEvent) {
@@ -273,6 +299,7 @@ export default function App() {
 
   function selectMode(type: QuizType) {
     if (autoNextTimer.current) clearTimeout(autoNextTimer.current);
+    if (badgeTimer.current) clearTimeout(badgeTimer.current);
     setQuizType(type);
     setIsPlaying(false);
     setQuizDone(false);
@@ -287,6 +314,7 @@ export default function App() {
 
   function startSession(size = quizSize) {
     if (autoNextTimer.current) clearTimeout(autoNextTimer.current);
+    if (badgeTimer.current) clearTimeout(badgeTimer.current);
 
     let baseWords: VocabWord[] = [];
 
@@ -305,12 +333,13 @@ export default function App() {
       baseWords = pool.length ? pool : [...words];
     }
 
-    // Keep adding randomly shuffled copies until reaching the exact requested size
+    // For Challenge mode generate a large randomized pool
+    const targetCount = quizType === 'challenge' ? Math.max(100, words.length * 5) : size;
     const activeWords: VocabWord[] = [];
-    while (activeWords.length < size) {
+    while (activeWords.length < targetCount) {
       const shuffled = [...baseWords].sort(() => Math.random() - 0.5);
       for (const w of shuffled) {
-        if (activeWords.length < size) {
+        if (activeWords.length < targetCount) {
           activeWords.push(w);
         } else {
           break;
@@ -323,6 +352,12 @@ export default function App() {
     setQuizChoice(null);
     setQuizScore(0);
     setQuizDone(false);
+    setChallengeTotalAnswered(0);
+    setTimeDeltaBadge(null);
+
+    if (quizType === 'challenge') {
+      setTimeLeft(challengeDuration);
+    }
 
     if (quizType === 'match') {
       initMatchingRound(activeWords);
@@ -344,12 +379,14 @@ export default function App() {
 
   function cancelQuiz() {
     if (autoNextTimer.current) clearTimeout(autoNextTimer.current);
+    if (badgeTimer.current) clearTimeout(badgeTimer.current);
     setIsPlaying(false);
     setQuizDone(false);
     setQuizChoice(null);
     setSelectedLeft(null);
     setSelectedRight(null);
     setWrongPair(null);
+    setTimeDeltaBadge(null);
   }
 
   const current = quizWords[quizIndex];
@@ -370,7 +407,7 @@ export default function App() {
 
   const correctAnswer = useMemo(() => {
     if (!current) return '';
-    if (quizType === 'de-en' || quizType === 'topic-exam') return current.english;
+    if (quizType === 'de-en' || quizType === 'topic-exam' || quizType === 'challenge') return current.english;
     if (quizType === 'en-de') return current.german;
     return getGrammarCategory(current);
   }, [current, quizType]);
@@ -382,7 +419,7 @@ export default function App() {
       const distractors = GRAMMAR_POOL.filter(g => g !== correct).sort(() => Math.random() - .5).slice(0, 3);
       return [correct, ...distractors].sort(() => Math.random() - .5);
     }
-    const answerKey = (quizType === 'de-en' || quizType === 'topic-exam') ? 'english' : 'german';
+    const answerKey = (quizType === 'de-en' || quizType === 'topic-exam' || quizType === 'challenge') ? 'english' : 'german';
     const candidateWords = (quizType === 'topic-exam' && selectedExamTopics.length)
       ? words.filter(w => selectedExamTopics.includes(w.topic))
       : words;
@@ -400,18 +437,47 @@ export default function App() {
     if (quizChoice || !current) return;
     setQuizChoice(choice);
     const ok = choice === correctAnswer;
-    if (ok) {
-      setQuizScore(s => s + 1);
-      autoNextTimer.current = setTimeout(() => {
-        nextQuestion();
-      }, 500);
+
+    if (quizType === 'challenge') {
+      setChallengeTotalAnswered(prev => prev + 1);
+
+      if (ok) {
+        setQuizScore(s => s + 1);
+        setTimeLeft(prev => prev + 2);
+        showTimeBadge('+2s', '#10b981');
+        autoNextTimer.current = setTimeout(() => {
+          nextQuestion();
+        }, 350);
+      } else {
+        setTimeLeft(prev => Math.max(0, prev - 5));
+        showTimeBadge('-5s', '#ef4444');
+        autoNextTimer.current = setTimeout(() => {
+          nextQuestion();
+        }, 700);
+      }
+    } else {
+      if (ok) {
+        setQuizScore(s => s + 1);
+        autoNextTimer.current = setTimeout(() => {
+          nextQuestion();
+        }, 500);
+      }
     }
+
     record(current, ok);
+  }
+
+  function showTimeBadge(text: string, _color: string) {
+    if (badgeTimer.current) clearTimeout(badgeTimer.current);
+    setTimeDeltaBadge(text);
+    badgeTimer.current = setTimeout(() => {
+      setTimeDeltaBadge(null);
+    }, 700);
   }
 
   function nextQuestion() {
     if (autoNextTimer.current) clearTimeout(autoNextTimer.current);
-    if (quizIndex + 1 >= quizWords.length) {
+    if (quizType !== 'challenge' && quizIndex + 1 >= quizWords.length) {
       setQuizDone(true);
       return;
     }
@@ -739,11 +805,12 @@ export default function App() {
                   <span className="muted-text">Choose a game mode</span>
                 </div>
                 <div className="practice-options">
+                  <button onClick={() => selectMode('challenge')} className="practice-option"><span className="option-icon quiz" style={{ background: '#fef3c7', color: '#d97706' }}><Timer size={19} /></span><span><strong>Challenge Mode</strong><small>Timer countdown · +2s correct / -5s wrong</small></span><ChevronRight size={17} /></button>
                   <button onClick={() => selectMode('de-en')} className="practice-option"><span className="option-icon quiz"><CircleHelp size={19} /></span><span><strong>German → English</strong><small>Translate German to English</small></span><ChevronRight size={17} /></button>
                   <button onClick={() => selectMode('en-de')} className="practice-option"><span className="option-icon cards"><CircleHelp size={19} /></span><span><strong>English → German</strong><small>Translate English to German</small></span><ChevronRight size={17} /></button>
                   <button onClick={() => selectMode('grammar')} className="practice-option"><span className="option-icon quiz"><Brain size={19} /></span><span><strong>Grammar Check</strong><small>Articles, genders, word types</small></span><ChevronRight size={17} /></button>
-                  <button onClick={() => selectMode('match')} className="practice-option"><span className="option-icon cards"><Link2 size={19} /></span><span><strong>Word Match</strong><small>Match 5 German & English pairs</small></span><ChevronRight size={17}/></button>
-                  <button onClick={() => selectMode('topic-exam')} className="practice-option"><span className="option-icon quiz"><ListFilter size={19} /></span><span><strong>Topic Exam</strong><small>Choose specific topics to test</small></span><ChevronRight size={17}/></button>
+                  <button onClick={() => selectMode('match')} className="practice-option"><span className="option-icon cards"><Link2 size={19} /></span><span><strong>Word Match</strong><small>Match 5 German & English pairs</small></span><ChevronRight size={17} /></button>
+                  <button onClick={() => selectMode('topic-exam')} className="practice-option"><span className="option-icon quiz"><ListFilter size={19} /></span><span><strong>Topic Exam</strong><small>Choose specific topics to test</small></span><ChevronRight size={17} /></button>
                 </div>
               </div>
               <div className="panel week-panel">
@@ -773,7 +840,7 @@ export default function App() {
                 </div>
                 <div className="tip-box">
                   <span className="tip-icon"><Brain size={17} /></span>
-                  <p><strong>Learning tip</strong><br />Remembering the article (der, die, das) along with the word gender strengthens sentence construction.</p>
+                  <p><strong>Learning tip</strong><br />In Challenge Mode, quick intuition strengthens reflex memory for words.</p>
                 </div>
               </div>
             </section>
@@ -862,6 +929,7 @@ export default function App() {
             <div className="page-title-row">
               <div><div className="eyebrow">PRACTICE STUDIO</div><h1>Let's practice<span className="period">.</span></h1><p className="subheading">Choose a game mode and test your German skills.</p></div>
               <div className="mode-toggle">
+                <button className={quizType === 'challenge' ? 'selected' : ''} onClick={() => selectMode('challenge')}><Timer size={16} /> Challenge</button>
                 <button className={quizType === 'de-en' ? 'selected' : ''} onClick={() => selectMode('de-en')}><CircleHelp size={16} /> German → English</button>
                 <button className={quizType === 'en-de' ? 'selected' : ''} onClick={() => selectMode('en-de')}><CircleHelp size={16} /> English → German</button>
                 <button className={quizType === 'grammar' ? 'selected' : ''} onClick={() => selectMode('grammar')}><Brain size={16} /> Grammar Check</button>
@@ -874,12 +942,16 @@ export default function App() {
               {!isPlaying || quizDone ? (
                 <div className="panel quiz-setup">
                   <span className="large-soft-icon">
-                    {quizType === 'match' ? <Link2 size={26} /> : quizType === 'grammar' ? <Brain size={26} /> : quizType === 'topic-exam' ? <ListFilter size={26} /> : <GraduationCap size={26} />}
+                    {quizType === 'challenge' ? <Timer size={26} /> : quizType === 'match' ? <Link2 size={26} /> : quizType === 'grammar' ? <Brain size={26} /> : quizType === 'topic-exam' ? <ListFilter size={26} /> : <GraduationCap size={26} />}
                   </span>
-                  <h2>{quizDone ? 'Session complete!' : quizType === 'topic-exam' ? 'Configure Topic Exam' : 'Ready for practice?'}</h2>
+                  <h2>{quizDone ? (quizType === 'challenge' ? 'Time is up!' : 'Session complete!') : quizType === 'challenge' ? 'Speed Challenge' : quizType === 'topic-exam' ? 'Configure Topic Exam' : 'Ready for practice?'}</h2>
                   <p>
                     {quizDone
-                      ? `You scored ${quizScore} points in this session. Keep up the rhythm!`
+                      ? quizType === 'challenge'
+                        ? `You answered ${quizScore} of ${challengeTotalAnswered} correctly during the countdown!`
+                        : `You scored ${quizScore} points in this session. Keep up the rhythm!`
+                      : quizType === 'challenge'
+                      ? 'Race against the clock! Correct answers grant +2 seconds, while mistakes subtract -5 seconds. How high can you score?'
                       : quizType === 'grammar'
                       ? 'Identify whether the word is Masculine (der), Feminine (die), Neuter (das), a Verb, or Adjective without relying on articles.'
                       : quizType === 'match'
@@ -889,6 +961,7 @@ export default function App() {
                       : `Questions are drawn in ${quizType === 'de-en' ? 'German → English' : 'English → German'} mode from your due words and vocabulary.`}
                   </p>
 
+                  {/* Topic Picker for Topic Exam Mode */}
                   {!quizDone && quizType === 'topic-exam' && (
                     <div style={{ width: '100%', margin: '16px 0', textAlign: 'left' }}>
                       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
@@ -953,13 +1026,31 @@ export default function App() {
 
                   {quizDone && (
                     <div className="score-ring">
-                      <strong>{quizWords.length ? Math.round(quizScore / Math.max(quizWords.length, 1) * 100) : 100}%</strong>
-                      <small>ACCURACY</small>
+                      <strong>
+                        {quizType === 'challenge'
+                          ? quizScore
+                          : (quizWords.length ? Math.round(quizScore / Math.max(quizWords.length, 1) * 100) : 100) + '%'}
+                      </strong>
+                      <small>{quizType === 'challenge' ? 'SCORE' : 'ACCURACY'}</small>
                     </div>
                   )}
 
                   <div className="setup-controls">
-                    {quizType !== 'match' && (
+                    {/* Time Selector for Challenge Mode */}
+                    {!quizDone && quizType === 'challenge' && (
+                      <label>Starting Time
+                        <select value={challengeDuration} onChange={e => setChallengeDuration(Number(e.target.value))}>
+                          <option value={30}>30 seconds</option>
+                          <option value={45}>45 seconds</option>
+                          <option value={60}>60 seconds (1 min)</option>
+                          <option value={90}>90 seconds (1.5 min)</option>
+                          <option value={120}>120 seconds (2 min)</option>
+                        </select>
+                      </label>
+                    )}
+
+                    {/* Question Count for Normal Quizzes */}
+                    {quizType !== 'match' && quizType !== 'challenge' && (
                       <label>Questions
                         <select value={quizSize} onChange={e => setQuizSize(Number(e.target.value))}>
                           <option value={5}>5 questions</option>
@@ -969,16 +1060,18 @@ export default function App() {
                         </select>
                       </label>
                     )}
+
                     <button
                       className="button primary"
                       onClick={() => startSession(quizSize)}
                       disabled={quizType === 'topic-exam' && !availableTopics.length}
                     >
-                      <RotateCcw size={16} />{quizDone ? 'Try another round' : 'Start exam'} <ChevronRight size={16} />
+                      <RotateCcw size={16} />{quizDone ? 'Play again' : 'Start challenge'} <ChevronRight size={16} />
                     </button>
                   </div>
                 </div>
               ) : quizType === 'match' ? (
+                /* MATCHING GAME VIEW */
                 <div className="panel quiz-panel">
                   <div className="quiz-topline" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%' }}>
                     <span className="topic-pill">Word Matching</span>
@@ -1065,21 +1158,53 @@ export default function App() {
                   )}
                 </div>
               ) : (
+                /* MULTIPLE CHOICE / CHALLENGE / TOPIC EXAM VIEW */
                 <div className="panel quiz-panel">
                   <div className="quiz-topline" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%' }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                      <button
-                        className="button secondary"
-                        style={{ padding: '6px 10px', height: 'auto' }}
-                        disabled={quizIndex === 0}
-                        onClick={prevQuestion}
-                        title="Previous Question"
-                      >
-                        <ChevronLeft size={16} /> Back
-                      </button>
-                      <span className="topic-pill">{current?.topic}</span>
-                    </div>
-                    <span>QUESTION {quizIndex + 1} OF {quizWords.length}</span>
+                    {quizType === 'challenge' ? (
+                      /* Challenge Timer & Live Score Bar */
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                        <div style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '6px',
+                          fontSize: '18px',
+                          fontWeight: 700,
+                          color: timeLeft <= 10 ? '#ef4444' : 'var(--color-primary)'
+                        }}>
+                          <Timer size={20} className={timeLeft <= 10 ? 'animate-bounce' : ''} />
+                          <span>{timeLeft}s</span>
+                          {timeDeltaBadge && (
+                            <span style={{
+                              fontSize: '13px',
+                              padding: '2px 6px',
+                              borderRadius: '6px',
+                              color: '#fff',
+                              backgroundColor: timeDeltaBadge.startsWith('+') ? '#10b981' : '#ef4444'
+                            }}>
+                              {timeDeltaBadge}
+                            </span>
+                          )}
+                        </div>
+                        <span style={{ fontSize: '13px', opacity: 0.8 }}>Score: <strong>{quizScore}</strong></span>
+                      </div>
+                    ) : (
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                        <button
+                          className="button secondary"
+                          style={{ padding: '6px 10px', height: 'auto' }}
+                          disabled={quizIndex === 0}
+                          onClick={prevQuestion}
+                          title="Previous Question"
+                        >
+                          <ChevronLeft size={16} /> Back
+                        </button>
+                        <span className="topic-pill">{current?.topic}</span>
+                      </div>
+                    )}
+
+                    <span>{quizType === 'challenge' ? `QUESTION #${quizIndex + 1}` : `QUESTION ${quizIndex + 1} OF ${quizWords.length}`}</span>
+
                     <button
                       className="button secondary"
                       style={{ padding: '6px 10px', height: 'auto', color: 'var(--color-text-muted)' }}
@@ -1090,24 +1215,31 @@ export default function App() {
                     </button>
                   </div>
 
-                  <div className="quiz-progress"><div style={{ width: `${(quizIndex + 1) / quizWords.length * 100}%` }} /></div>
+                  <div className="quiz-progress">
+                    <div style={{
+                      width: quizType === 'challenge'
+                        ? `${Math.min(100, (timeLeft / challengeDuration) * 100)}%`
+                        : `${((quizIndex + 1) / quizWords.length) * 100}%`,
+                      backgroundColor: quizType === 'challenge' && timeLeft <= 10 ? '#ef4444' : undefined
+                    }} />
+                  </div>
 
                   <div className="question-area">
                     <div className="eyebrow">
-                      {quizType === 'de-en' || quizType === 'topic-exam'
-                        ? 'CHOOSE THE ENGLISH MEANING'
+                      {quizType === 'grammar'
+                        ? 'IDENTIFY THE GRAMMAR CATEGORY'
                         : quizType === 'en-de'
                         ? 'CHOOSE THE GERMAN TRANSLATION'
-                        : 'IDENTIFY THE GRAMMAR CATEGORY'}
+                        : 'CHOOSE THE ENGLISH MEANING'}
                     </div>
                     <h2>{promptText}</h2>
                     {quizType !== 'grammar' && current?.type && <span className="word-type">{current.type}</span>}
                     <p>
-                      {quizType === 'de-en' || quizType === 'topic-exam'
-                        ? 'What does this word mean in English?'
+                      {quizType === 'grammar'
+                        ? 'Is this word masculine (der), feminine (die), neuter (das), a verb, or adjective?'
                         : quizType === 'en-de'
                         ? 'What is the correct German word?'
-                        : 'Is this word masculine (der), feminine (die), neuter (das), a verb, or adjective?'}
+                        : 'What does this word mean in English?'}
                     </p>
                   </div>
 
@@ -1133,13 +1265,18 @@ export default function App() {
                         {quizType === 'grammar' && (
                           <span> (Full word: <em>{current?.german}</em>)</span>
                         )}
+                        {quizType === 'challenge' && (
+                          <span style={{ color: '#ef4444', marginLeft: '6px' }}>(-5s)</span>
+                        )}
                       </strong>
                       {current?.example && (
                         <p>{current.example}<br /><span>{current.exampleTranslation}</span></p>
                       )}
-                      <button className="button primary" onClick={nextQuestion}>
-                        {quizIndex + 1 === quizWords.length ? 'See results' : 'Continue'} <ChevronRight size={16} />
-                      </button>
+                      {quizType !== 'challenge' && (
+                        <button className="button primary" onClick={nextQuestion}>
+                          {quizIndex + 1 === quizWords.length ? 'See results' : 'Continue'} <ChevronRight size={16} />
+                        </button>
+                      )}
                     </div>
                   )}
                 </div>
