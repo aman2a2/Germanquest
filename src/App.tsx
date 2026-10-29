@@ -5,6 +5,7 @@ import { starterWords, type VocabWord } from './lib/words';
 
 type Tab = 'Home' | 'Learn' | 'Play' | 'Progress';
 type QuizType = 'de-en' | 'en-de' | 'grammar' | 'match' | 'topic-exam' | 'challenge';
+type TopicExamSubMode = 'de-en' | 'en-de' | 'grammar' | 'match';
 type Result = { wordId: string; correct: boolean; date: string };
 type Review = { wordId: string; dueAt: string; interval: number; correctCount: number; lastCorrect?: boolean };
 type ChallengeRecord = {
@@ -85,6 +86,7 @@ export default function App() {
 
   // Topic Exam Selection State
   const [selectedExamTopics, setSelectedExamTopics] = useState<string[]>([]);
+  const [topicSubMode, setTopicSubMode] = useState<TopicExamSubMode>('de-en');
 
   // Account dropdown & Modal states
   const [menuOpen, setMenuOpen] = useState(false);
@@ -152,7 +154,6 @@ export default function App() {
     const correctCount = quizScore;
     const wrongCount = Math.max(0, challengeTotalAnswered - correctCount);
     
-    // Save record to last 5 history
     const newRecord: ChallengeRecord = {
       id: crypto.randomUUID ? crypto.randomUUID() : String(Date.now()),
       duration: challengeDuration,
@@ -185,6 +186,12 @@ export default function App() {
   const mastered = words.filter(w => (reviews[w.id]?.correctCount || 0) >= 4).length;
   const weekResults = results.filter(r => Date.now() - new Date(r.date).getTime() <= 7 * 86400000);
   const recentDays = Array.from({ length: 7 }, (_, i) => { const d = new Date(); d.setDate(d.getDate() - (6 - i)); return d.toISOString().slice(0, 10); });
+
+  // Effective game format in session (checks topic-exam submode if in topic exam)
+  const activeGameMode = useMemo(() => {
+    if (quizType === 'topic-exam') return topicSubMode;
+    return quizType;
+  }, [quizType, topicSubMode]);
 
   async function syncFromCloud() {
     if (!supabase || !userEmail) {
@@ -395,7 +402,7 @@ export default function App() {
       setTimeLeft(challengeDuration);
     }
 
-    if (quizType === 'match') {
+    if (activeGameMode === 'match') {
       initMatchingRound(activeWords);
     }
 
@@ -429,8 +436,8 @@ export default function App() {
 
   const promptText = useMemo(() => {
     if (!current) return '';
-    if (quizType === 'en-de') return current.english;
-    if (quizType === 'grammar') {
+    if (activeGameMode === 'en-de') return current.english;
+    if (activeGameMode === 'grammar') {
       const g = current.german.trim();
       if (/^(der|die|das)\s+/i.test(g)) {
         const noun = g.replace(/^(der|die|das)\s+/i, '');
@@ -439,23 +446,23 @@ export default function App() {
       return g;
     }
     return current.german;
-  }, [current, quizIndex, quizType]);
+  }, [current, quizIndex, activeGameMode]);
 
   const correctAnswer = useMemo(() => {
     if (!current) return '';
-    if (quizType === 'de-en' || quizType === 'topic-exam' || quizType === 'challenge') return current.english;
-    if (quizType === 'en-de') return current.german;
+    if (activeGameMode === 'de-en' || quizType === 'challenge') return current.english;
+    if (activeGameMode === 'en-de') return current.german;
     return getGrammarCategory(current);
-  }, [current, quizType]);
+  }, [current, activeGameMode, quizType]);
 
   const choices = useMemo(() => {
     if (!current) return [];
-    if (quizType === 'grammar') {
+    if (activeGameMode === 'grammar') {
       const correct = getGrammarCategory(current);
       const distractors = GRAMMAR_POOL.filter(g => g !== correct).sort(() => Math.random() - .5).slice(0, 3);
       return [correct, ...distractors].sort(() => Math.random() - .5);
     }
-    const answerKey = (quizType === 'de-en' || quizType === 'topic-exam' || quizType === 'challenge') ? 'english' : 'german';
+    const answerKey = (activeGameMode === 'de-en' || quizType === 'challenge') ? 'english' : 'german';
     const candidateWords = (quizType === 'topic-exam' && selectedExamTopics.length)
       ? words.filter(w => selectedExamTopics.includes(w.topic))
       : words;
@@ -467,7 +474,7 @@ export default function App() {
       .slice(0, 3)
       .map(w => w[answerKey]);
     return [current[answerKey], ...otherChoices].sort(() => Math.random() - .5);
-  }, [current, quizIndex, words, quizType, selectedExamTopics]);
+  }, [current, quizIndex, words, activeGameMode, quizType, selectedExamTopics]);
 
   function answerQuiz(choice: string) {
     if (quizChoice || !current) return;
@@ -925,11 +932,11 @@ export default function App() {
                 </div>
                 <div className="practice-options">
                   <button onClick={() => selectMode('challenge')} className="practice-option"><span className="option-icon quiz" style={{ background: '#fef3c7', color: '#d97706' }}><Timer size={19} /></span><span><strong>Challenge Mode</strong><small>Timer countdown · +2s correct / -5s wrong</small></span><ChevronRight size={17} /></button>
+                  <button onClick={() => selectMode('topic-exam')} className="practice-option"><span className="option-icon quiz" style={{ background: '#e0e7ff', color: '#4338ca' }}><ListFilter size={19} /></span><span><strong>Topic Exam</strong><small>Choose topic(s) and game mode</small></span><ChevronRight size={17} /></button>
                   <button onClick={() => selectMode('de-en')} className="practice-option"><span className="option-icon quiz"><CircleHelp size={19} /></span><span><strong>German → English</strong><small>Translate German to English</small></span><ChevronRight size={17} /></button>
                   <button onClick={() => selectMode('en-de')} className="practice-option"><span className="option-icon cards"><CircleHelp size={19} /></span><span><strong>English → German</strong><small>Translate English to German</small></span><ChevronRight size={17} /></button>
                   <button onClick={() => selectMode('grammar')} className="practice-option"><span className="option-icon quiz"><Brain size={19} /></span><span><strong>Grammar Check</strong><small>Articles, genders, word types</small></span><ChevronRight size={17} /></button>
                   <button onClick={() => selectMode('match')} className="practice-option"><span className="option-icon cards"><Link2 size={19} /></span><span><strong>Word Match</strong><small>Match 5 German & English pairs</small></span><ChevronRight size={17} /></button>
-                  <button onClick={() => selectMode('topic-exam')} className="practice-option"><span className="option-icon quiz"><ListFilter size={19} /></span><span><strong>Topic Exam</strong><small>Choose specific topics to test</small></span><ChevronRight size={17} /></button>
                 </div>
               </div>
               <div className="panel week-panel">
@@ -959,7 +966,7 @@ export default function App() {
                 </div>
                 <div className="tip-box">
                   <span className="tip-icon"><Brain size={17} /></span>
-                  <p><strong>Learning tip</strong><br />In Challenge Mode, quick intuition strengthens reflex memory for words.</p>
+                  <p><strong>Learning tip</strong><br />In Topic Exam, grouping vocabulary helps solidify word associations and recall.</p>
                 </div>
               </div>
             </section>
@@ -1048,12 +1055,12 @@ export default function App() {
             <div className="page-title-row">
               <div><div className="eyebrow">PRACTICE STUDIO</div><h1>Let's practice<span className="period">.</span></h1><p className="subheading">Choose a game mode and test your German skills.</p></div>
               <div className="mode-toggle">
+                <button className={quizType === 'topic-exam' ? 'selected' : ''} onClick={() => selectMode('topic-exam')}><ListFilter size={16} /> Topic Exam</button>
                 <button className={quizType === 'challenge' ? 'selected' : ''} onClick={() => selectMode('challenge')}><Timer size={16} /> Challenge</button>
                 <button className={quizType === 'de-en' ? 'selected' : ''} onClick={() => selectMode('de-en')}><CircleHelp size={16} /> German → English</button>
                 <button className={quizType === 'en-de' ? 'selected' : ''} onClick={() => selectMode('en-de')}><CircleHelp size={16} /> English → German</button>
                 <button className={quizType === 'grammar' ? 'selected' : ''} onClick={() => selectMode('grammar')}><Brain size={16} /> Grammar Check</button>
                 <button className={quizType === 'match' ? 'selected' : ''} onClick={() => selectMode('match')}><Link2 size={16} /> Word Match</button>
-                <button className={quizType === 'topic-exam' ? 'selected' : ''} onClick={() => selectMode('topic-exam')}><ListFilter size={16} /> Topic Exam</button>
               </div>
             </div>
 
@@ -1063,7 +1070,7 @@ export default function App() {
                   <span className="large-soft-icon">
                     {quizType === 'challenge' ? <Timer size={26} /> : quizType === 'match' ? <Link2 size={26} /> : quizType === 'grammar' ? <Brain size={26} /> : quizType === 'topic-exam' ? <ListFilter size={26} /> : <GraduationCap size={26} />}
                   </span>
-                  <h2>{quizDone ? (quizType === 'challenge' ? 'Time is up!' : 'Session complete!') : quizType === 'challenge' ? 'Speed Challenge' : quizType === 'topic-exam' ? 'Configure Topic Exam' : 'Ready for practice?'}</h2>
+                  <h2>{quizDone ? (quizType === 'challenge' ? 'Time is up!' : 'Session complete!') : quizType === 'topic-exam' ? 'Configure Topic Exam' : 'Ready for practice?'}</h2>
                   <p>
                     {quizDone
                       ? quizType === 'challenge'
@@ -1076,69 +1083,162 @@ export default function App() {
                       : quizType === 'match'
                       ? 'Connect 5 German words on the left with their corresponding English translations on the right.'
                       : quizType === 'topic-exam'
-                      ? 'Select one or more topics below to test vocabulary specifically from those categories.'
+                      ? 'Select your topics, choose your desired game format, and test your vocabulary.'
                       : `Questions are drawn in ${quizType === 'de-en' ? 'German → English' : 'English → German'} mode from your due words and vocabulary.`}
                   </p>
 
-                  {/* Topic Picker for Topic Exam Mode */}
+                  {/* Multi-Step Setup for Topic Exam */}
                   {!quizDone && quizType === 'topic-exam' && (
-                    <div style={{ width: '100%', margin: '16px 0', textAlign: 'left' }}>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
-                        <strong style={{ fontSize: '13px', color: '#4b5563' }}>SELECT TOPICS:</strong>
-                        <div style={{ display: 'flex', gap: '8px' }}>
-                          <button
-                            type="button"
-                            className="text-button"
-                            onClick={() => setSelectedExamTopics([...availableTopics])}
-                          >
-                            Select All
-                          </button>
-                          <button
-                            type="button"
-                            className="text-button"
-                            onClick={() => setSelectedExamTopics([])}
-                          >
-                            Clear
-                          </button>
+                    <div style={{ width: '100%', margin: '16px 0', textAlign: 'left', display: 'flex', flexDirection: 'column', gap: '16px' }}>
+                      {/* Step 1: Select Topics */}
+                      <div>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+                          <strong style={{ fontSize: '13px', color: '#4b5563' }}>STEP 1: SELECT TOPIC(S)</strong>
+                          <div style={{ display: 'flex', gap: '8px' }}>
+                            <button
+                              type="button"
+                              className="text-button"
+                              onClick={() => setSelectedExamTopics([...availableTopics])}
+                            >
+                              Select All
+                            </button>
+                            <button
+                              type="button"
+                              className="text-button"
+                              onClick={() => setSelectedExamTopics([])}
+                            >
+                              Clear
+                            </button>
+                          </div>
+                        </div>
+
+                        <div style={{
+                          display: 'flex',
+                          flexWrap: 'wrap',
+                          gap: '8px',
+                          maxHeight: '160px',
+                          overflowY: 'auto',
+                          padding: '4px'
+                        }}>
+                          {availableTopics.map(t => {
+                            const count = words.filter(w => w.topic === t).length;
+                            const isSelected = selectedExamTopics.includes(t);
+                            return (
+                              <button
+                                key={t}
+                                type="button"
+                                onClick={() => toggleTopicSelection(t)}
+                                style={{
+                                  padding: '6px 12px',
+                                  borderRadius: '20px',
+                                  border: isSelected ? '1px solid var(--color-primary)' : '1px solid #d1d5db',
+                                  background: isSelected ? 'rgba(59, 130, 246, 0.12)' : '#ffffff',
+                                  color: isSelected ? 'var(--color-primary)' : '#374151',
+                                  fontWeight: isSelected ? 600 : 400,
+                                  fontSize: '13px',
+                                  cursor: 'pointer',
+                                  display: 'flex',
+                                  alignItems: 'center',
+                                  gap: '6px'
+                                }}
+                              >
+                                {isSelected && <Check size={14} />}
+                                <span>{t}</span>
+                                <small style={{ opacity: 0.6 }}>({count})</small>
+                              </button>
+                            );
+                          })}
                         </div>
                       </div>
 
-                      <div style={{
-                        display: 'flex',
-                        flexWrap: 'wrap',
-                        gap: '8px',
-                        maxHeight: '180px',
-                        overflowY: 'auto',
-                        padding: '4px'
-                      }}>
-                        {availableTopics.map(t => {
-                          const count = words.filter(w => w.topic === t).length;
-                          const isSelected = selectedExamTopics.includes(t);
-                          return (
-                            <button
-                              key={t}
-                              type="button"
-                              onClick={() => toggleTopicSelection(t)}
-                              style={{
-                                padding: '6px 12px',
-                                borderRadius: '20px',
-                                border: isSelected ? '1px solid var(--color-primary)' : '1px solid #d1d5db',
-                                background: isSelected ? 'rgba(59, 130, 246, 0.12)' : '#ffffff',
-                                color: isSelected ? 'var(--color-primary)' : '#374151',
-                                fontWeight: isSelected ? 600 : 400,
-                                fontSize: '13px',
-                                cursor: 'pointer',
-                                display: 'flex',
-                                alignItems: 'center',
-                                gap: '6px'
-                              }}
-                            >
-                              {isSelected && <Check size={14} />}
-                              <span>{t}</span>
-                              <small style={{ opacity: 0.6 }}>({count})</small>
-                            </button>
-                          );
-                        })}
+                      {/* Step 2: Choose Game Mode for Topic Exam */}
+                      <div>
+                        <strong style={{ fontSize: '13px', color: '#4b5563', display: 'block', marginBottom: '8px' }}>STEP 2: CHOOSE GAME MODE</strong>
+                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: '8px' }}>
+                          <button
+                            type="button"
+                            onClick={() => setTopicSubMode('de-en')}
+                            style={{
+                              padding: '10px',
+                              borderRadius: '10px',
+                              border: topicSubMode === 'de-en' ? '2px solid var(--color-primary)' : '1px solid #d1d5db',
+                              background: topicSubMode === 'de-en' ? 'rgba(59, 130, 246, 0.08)' : '#ffffff',
+                              color: topicSubMode === 'de-en' ? 'var(--color-primary)' : '#374151',
+                              fontWeight: 600,
+                              fontSize: '13px',
+                              cursor: 'pointer',
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'center',
+                              gap: '6px'
+                            }}
+                          >
+                            <CircleHelp size={16} /> German → English
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={() => setTopicSubMode('en-de')}
+                            style={{
+                              padding: '10px',
+                              borderRadius: '10px',
+                              border: topicSubMode === 'en-de' ? '2px solid var(--color-primary)' : '1px solid #d1d5db',
+                              background: topicSubMode === 'en-de' ? 'rgba(59, 130, 246, 0.08)' : '#ffffff',
+                              color: topicSubMode === 'en-de' ? 'var(--color-primary)' : '#374151',
+                              fontWeight: 600,
+                              fontSize: '13px',
+                              cursor: 'pointer',
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'center',
+                              gap: '6px'
+                            }}
+                          >
+                            <CircleHelp size={16} /> English → German
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={() => setTopicSubMode('grammar')}
+                            style={{
+                              padding: '10px',
+                              borderRadius: '10px',
+                              border: topicSubMode === 'grammar' ? '2px solid var(--color-primary)' : '1px solid #d1d5db',
+                              background: topicSubMode === 'grammar' ? 'rgba(59, 130, 246, 0.08)' : '#ffffff',
+                              color: topicSubMode === 'grammar' ? 'var(--color-primary)' : '#374151',
+                              fontWeight: 600,
+                              fontSize: '13px',
+                              cursor: 'pointer',
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'center',
+                              gap: '6px'
+                            }}
+                          >
+                            <Brain size={16} /> Grammar Check
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={() => setTopicSubMode('match')}
+                            style={{
+                              padding: '10px',
+                              borderRadius: '10px',
+                              border: topicSubMode === 'match' ? '2px solid var(--color-primary)' : '1px solid #d1d5db',
+                              background: topicSubMode === 'match' ? 'rgba(59, 130, 246, 0.08)' : '#ffffff',
+                              color: topicSubMode === 'match' ? 'var(--color-primary)' : '#374151',
+                              fontWeight: 600,
+                              fontSize: '13px',
+                              cursor: 'pointer',
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'center',
+                              gap: '6px'
+                            }}
+                          >
+                            <Link2 size={16} /> Word Match
+                          </button>
+                        </div>
                       </div>
                     </div>
                   )}
@@ -1155,7 +1255,6 @@ export default function App() {
                   )}
 
                   <div className="setup-controls" style={{ flexWrap: 'wrap', justifyContent: 'center' }}>
-                    {/* Time Selector for Challenge Mode */}
                     {!quizDone && quizType === 'challenge' && (
                       <label>Starting Time
                         <select value={challengeDuration} onChange={e => setChallengeDuration(Number(e.target.value))}>
@@ -1168,8 +1267,7 @@ export default function App() {
                       </label>
                     )}
 
-                    {/* Question Count for Normal Quizzes */}
-                    {quizType !== 'match' && quizType !== 'challenge' && (
+                    {activeGameMode !== 'match' && quizType !== 'challenge' && (
                       <label>Questions
                         <select value={quizSize} onChange={e => setQuizSize(Number(e.target.value))}>
                           <option value={5}>5 questions</option>
@@ -1188,7 +1286,6 @@ export default function App() {
                       <RotateCcw size={16} />{quizDone ? 'Play again' : 'Start session'} <ChevronRight size={16} />
                     </button>
 
-                    {/* Button to view last 5 challenge records */}
                     {quizType === 'challenge' && (
                       <button
                         type="button"
@@ -1201,11 +1298,11 @@ export default function App() {
                     )}
                   </div>
                 </div>
-              ) : quizType === 'match' ? (
+              ) : activeGameMode === 'match' ? (
                 /* MATCHING GAME VIEW */
                 <div className="panel quiz-panel">
                   <div className="quiz-topline" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%' }}>
-                    <span className="topic-pill">Word Matching</span>
+                    <span className="topic-pill">{quizType === 'topic-exam' ? 'Topic Match' : 'Word Matching'}</span>
                     <span>{matchedIds.length} / 5 PAIRS MATCHED</span>
                     <button
                       className="button secondary"
@@ -1289,7 +1386,7 @@ export default function App() {
                   )}
                 </div>
               ) : (
-                /* MULTIPLE CHOICE / CHALLENGE / TOPIC EXAM VIEW */
+                /* MULTIPLE CHOICE VIEW (Supports de-en, en-de, grammar, and challenge) */
                 <div className="panel quiz-panel">
                   <div className="quiz-topline" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%' }}>
                     {quizType === 'challenge' ? (
@@ -1356,18 +1453,18 @@ export default function App() {
 
                   <div className="question-area">
                     <div className="eyebrow">
-                      {quizType === 'grammar'
+                      {activeGameMode === 'grammar'
                         ? 'IDENTIFY THE GRAMMAR CATEGORY'
-                        : quizType === 'en-de'
+                        : activeGameMode === 'en-de'
                         ? 'CHOOSE THE GERMAN TRANSLATION'
                         : 'CHOOSE THE ENGLISH MEANING'}
                     </div>
                     <h2>{promptText}</h2>
-                    {quizType !== 'grammar' && current?.type && <span className="word-type">{current.type}</span>}
+                    {activeGameMode !== 'grammar' && current?.type && <span className="word-type">{current.type}</span>}
                     <p>
-                      {quizType === 'grammar'
+                      {activeGameMode === 'grammar'
                         ? 'Is this word masculine (der), feminine (die), neuter (das), a verb, or adjective?'
-                        : quizType === 'en-de'
+                        : activeGameMode === 'en-de'
                         ? 'What is the correct German word?'
                         : 'What does this word mean in English?'}
                     </p>
@@ -1392,7 +1489,7 @@ export default function App() {
                     <div className="answer-feedback bad">
                       <strong>
                         Not quite — correct answer: {correctAnswer}
-                        {quizType === 'grammar' && (
+                        {activeGameMode === 'grammar' && (
                           <span> (Full word: <em>{current?.german}</em>)</span>
                         )}
                         {quizType === 'challenge' && (
