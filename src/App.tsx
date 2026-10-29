@@ -1,11 +1,11 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react';
-import { BookOpen, Brain, Check, ChevronLeft, ChevronRight, CircleHelp, Cloud, Download, Flame, GraduationCap, History, Home, Layers3, Link2, ListFilter, LogIn, LogOut, RefreshCw, RotateCcw, Search, Settings2, Sparkles, Target, Timer, Trophy, User, X } from 'lucide-react';
+import { BookOpen, Brain, Check, ChevronLeft, ChevronRight, CircleHelp, Cloud, Download, Flame, GraduationCap, History, Home, Layers3, Link2, ListFilter, LogIn, LogOut, RefreshCw, RotateCcw, Search, Settings2, Sparkles, Split, Shuffle, Target, Timer, Trophy, User, X } from 'lucide-react';
 import { cloudEnabled, supabase } from './lib/supabase';
 import { starterWords, type VocabWord } from './lib/words';
 
 type Tab = 'Home' | 'Learn' | 'Play' | 'Progress';
 type QuizType = 'de-en' | 'en-de' | 'grammar' | 'match' | 'topic-exam' | 'challenge';
-type TopicExamSubMode = 'de-en' | 'en-de' | 'grammar' | 'match';
+type TopicExamSubMode = 'de-en' | 'en-de' | 'grammar' | 'match' | 'plural' | 'opposite' | 'synonym';
 type Result = { wordId: string; correct: boolean; date: string };
 type Review = { wordId: string; dueAt: string; interval: number; correctCount: number; lastCorrect?: boolean };
 type ChallengeRecord = {
@@ -25,9 +25,11 @@ const readChallengeHistory = (): ChallengeRecord[] => {
   try { return JSON.parse(localStorage.getItem(CHALLENGE_HISTORY_KEY) || '[]'); } catch { return []; }
 };
 const csvCell = (s: string) => `"${s.replaceAll('"','""')}"`;
-const exportCsv = (words: VocabWord[]) => ['german,english,topic,type,plural,example,exampleTranslation', ...words.map(w => [w.german,w.english,w.topic,w.type||'',w.plural||'',w.example||'',w.exampleTranslation||''].map(csvCell).join(','))].join('\n');
+const exportCsv = (words: (VocabWord & { opposite?: string; synonym?: string })[]) => 
+  ['german,english,topic,type,plural,opposite,synonym,example,exampleTranslation', 
+   ...words.map(w => [w.german,w.english,w.topic,w.type||'',w.plural||'',w.opposite||'',w.synonym||'',w.example||'',w.exampleTranslation||''].map(csvCell).join(','))
+  ].join('\n');
 
-// Grammar categorization helper
 const getGrammarCategory = (w: VocabWord): string => {
   const t = (w.type || '').toLowerCase();
   const g = w.german.trim();
@@ -51,15 +53,16 @@ const GRAMMAR_POOL = [
   'Adverb'
 ];
 
+type FullVocabWord = VocabWord & { opposite?: string; synonym?: string };
+
 export default function App() {
   const [tab, setTab] = useState<Tab>('Home');
-  const [words, setWords] = useState<VocabWord[]>(() => readStore().words?.length ? readStore().words : starterWords);
+  const [words, setWords] = useState<FullVocabWord[]>(() => readStore().words?.length ? readStore().words : starterWords);
   const [results, setResults] = useState<Result[]>(() => readStore().results || []);
   const [reviews, setReviews] = useState<Record<string, Review>>(() => readStore().reviews || {});
   const [goal, setGoal] = useState<number>(() => readStore().goal || 10);
   const [userEmail, setUserEmail] = useState<string | null>(null);
 
-  // Auth state
   const [authEmail, setAuthEmail] = useState('');
   const [authPassword, setAuthPassword] = useState('');
   const [authMessage, setAuthMessage] = useState('');
@@ -68,7 +71,7 @@ export default function App() {
   const [topic, setTopic] = useState('All topics');
   const [notice, setNotice] = useState('');
   const [quizSize, setQuizSize] = useState(10);
-  const [quizWords, setQuizWords] = useState<VocabWord[]>([]);
+  const [quizWords, setQuizWords] = useState<FullVocabWord[]>([]);
   const [quizIndex, setQuizIndex] = useState(0);
   const [quizChoice, setQuizChoice] = useState<string | null>(null);
   const [quizScore, setQuizScore] = useState(0);
@@ -94,7 +97,6 @@ export default function App() {
   const menuRef = useRef<HTMLDivElement>(null);
 
   // Matching game state
-  const [matchSet, setMatchSet] = useState<VocabWord[]>([]);
   const [leftWords, setLeftWords] = useState<{ id: string; text: string }[]>([]);
   const [rightWords, setRightWords] = useState<{ id: string; text: string }[]>([]);
   const [selectedLeft, setSelectedLeft] = useState<string | null>(null);
@@ -132,7 +134,6 @@ export default function App() {
     };
   }, []);
 
-  // Challenge Mode Countdown Timer
   useEffect(() => {
     if (!isPlaying || quizType !== 'challenge' || quizDone) return;
     const interval = setInterval(() => {
@@ -187,7 +188,6 @@ export default function App() {
   const weekResults = results.filter(r => Date.now() - new Date(r.date).getTime() <= 7 * 86400000);
   const recentDays = Array.from({ length: 7 }, (_, i) => { const d = new Date(); d.setDate(d.getDate() - (6 - i)); return d.toISOString().slice(0, 10); });
 
-  // Effective game format in session (checks topic-exam submode if in topic exam)
   const activeGameMode = useMemo(() => {
     if (quizType === 'topic-exam') return topicSubMode;
     return quizType;
@@ -215,6 +215,8 @@ export default function App() {
           topic: r.topic || 'My vocabulary',
           type: r.type || '',
           plural: r.plural || '',
+          opposite: r.opposite || '',
+          synonym: r.synonym || '',
           example: r.example || '',
           exampleTranslation: r.example_translation || ''
         })));
@@ -228,6 +230,8 @@ export default function App() {
             topic: word.topic,
             type: word.type || null,
             plural: word.plural || null,
+            opposite: word.opposite || null,
+            synonym: word.synonym || null,
             example: word.example || null,
             example_translation: word.exampleTranslation || null
           });
@@ -259,18 +263,6 @@ export default function App() {
 
         setReviews(prev => ({ ...prev, ...next }));
         setResults(prev => prev.length >= syncedResults.length ? prev : syncedResults);
-      } else if (userData.user && results.length) {
-        for (const [wId, rev] of Object.entries(reviews)) {
-          await supabase.from('word_progress').upsert({
-            user_id: userData.user.id,
-            word_id: wId,
-            due_at: rev.dueAt,
-            interval_days: rev.interval,
-            correct_count: rev.correctCount,
-            last_correct: rev.lastCorrect ?? true,
-            updated_at: new Date().toISOString()
-          });
-        }
       }
 
       setNotice('Cloud sync active: progress & vocabulary updated.');
@@ -311,7 +303,7 @@ export default function App() {
     setMenuOpen(false);
   }
 
-  function record(word: VocabWord, correct: boolean) {
+  function record(word: FullVocabWord, correct: boolean) {
     const date = todayKey();
     setResults(prev => [...prev, { wordId: word.id, correct, date }]);
     setReviews(prev => {
@@ -360,15 +352,24 @@ export default function App() {
     if (autoNextTimer.current) clearTimeout(autoNextTimer.current);
     if (badgeTimer.current) clearTimeout(badgeTimer.current);
 
-    let baseWords: VocabWord[] = [];
+    let baseWords: FullVocabWord[] = [];
 
     if (quizType === 'topic-exam') {
-      const filtered = selectedExamTopics.length
+      let filtered = selectedExamTopics.length
         ? words.filter(w => selectedExamTopics.includes(w.topic))
         : words;
 
+      // Filter by requirement for specialized submodes
+      if (topicSubMode === 'plural') {
+        filtered = filtered.filter(w => Boolean(w.plural && w.plural.trim()));
+      } else if (topicSubMode === 'opposite') {
+        filtered = filtered.filter(w => Boolean(w.opposite && w.opposite.trim()));
+      } else if (topicSubMode === 'synonym') {
+        filtered = filtered.filter(w => Boolean(w.synonym && w.synonym.trim()));
+      }
+
       if (!filtered.length) {
-        setNotice('No words found in the selected topic(s).');
+        setNotice(`No words found in the selected topic(s) that have data for "${topicSubMode}".`);
         return;
       }
       baseWords = filtered;
@@ -378,7 +379,7 @@ export default function App() {
     }
 
     const targetCount = quizType === 'challenge' ? Math.max(100, words.length * 5) : size;
-    const activeWords: VocabWord[] = [];
+    const activeWords: FullVocabWord[] = [];
     while (activeWords.length < targetCount) {
       const shuffled = [...baseWords].sort(() => Math.random() - 0.5);
       for (const w of shuffled) {
@@ -409,9 +410,8 @@ export default function App() {
     setIsPlaying(true);
   }
 
-  function initMatchingRound(pool: VocabWord[]) {
+  function initMatchingRound(pool: FullVocabWord[]) {
     const subset = pool.slice(0, 5);
-    setMatchSet(subset);
     setLeftWords(subset.map(w => ({ id: w.id, text: w.german })).sort(() => Math.random() - .5));
     setRightWords(subset.map(w => ({ id: w.id, text: w.english })).sort(() => Math.random() - .5));
     setSelectedLeft(null);
@@ -452,7 +452,11 @@ export default function App() {
     if (!current) return '';
     if (activeGameMode === 'de-en' || quizType === 'challenge') return current.english;
     if (activeGameMode === 'en-de') return current.german;
-    return getGrammarCategory(current);
+    if (activeGameMode === 'grammar') return getGrammarCategory(current);
+    if (activeGameMode === 'plural') return current.plural || '';
+    if (activeGameMode === 'opposite') return current.opposite || '';
+    if (activeGameMode === 'synonym') return current.synonym || '';
+    return current.english;
   }, [current, activeGameMode, quizType]);
 
   const choices = useMemo(() => {
@@ -462,18 +466,26 @@ export default function App() {
       const distractors = GRAMMAR_POOL.filter(g => g !== correct).sort(() => Math.random() - .5).slice(0, 3);
       return [correct, ...distractors].sort(() => Math.random() - .5);
     }
-    const answerKey = (activeGameMode === 'de-en' || quizType === 'challenge') ? 'english' : 'german';
+
+    let key: 'english' | 'german' | 'plural' | 'opposite' | 'synonym' = 'english';
+    if (activeGameMode === 'en-de') key = 'german';
+    if (activeGameMode === 'plural') key = 'plural';
+    if (activeGameMode === 'opposite') key = 'opposite';
+    if (activeGameMode === 'synonym') key = 'synonym';
+
     const candidateWords = (quizType === 'topic-exam' && selectedExamTopics.length)
-      ? words.filter(w => selectedExamTopics.includes(w.topic))
-      : words;
-    const pool = candidateWords.length >= 4 ? candidateWords : words;
+      ? words.filter(w => selectedExamTopics.includes(w.topic) && Boolean(w[key]))
+      : words.filter(w => Boolean(w[key]));
+
+    const pool = candidateWords.length >= 4 ? candidateWords : words.filter(w => Boolean(w[key]));
 
     const otherChoices = pool
-      .filter(w => w.id !== current.id)
+      .filter(w => w.id !== current.id && w[key] !== current[key])
       .sort(() => Math.random() - .5)
       .slice(0, 3)
-      .map(w => w[answerKey]);
-    return [current[answerKey], ...otherChoices].sort(() => Math.random() - .5);
+      .map(w => w[key] as string);
+
+    return [current[key] as string, ...otherChoices].sort(() => Math.random() - .5);
   }, [current, quizIndex, words, activeGameMode, quizType, selectedExamTopics]);
 
   function answerQuiz(choice: string) {
@@ -711,7 +723,6 @@ export default function App() {
           </div>
         </header>
 
-        {/* History Modal for Challenge Mode */}
         {showHistoryModal && (
           <div style={{
             position: 'fixed',
@@ -932,7 +943,7 @@ export default function App() {
                 </div>
                 <div className="practice-options">
                   <button onClick={() => selectMode('challenge')} className="practice-option"><span className="option-icon quiz" style={{ background: '#fef3c7', color: '#d97706' }}><Timer size={19} /></span><span><strong>Challenge Mode</strong><small>Timer countdown · +2s correct / -5s wrong</small></span><ChevronRight size={17} /></button>
-                  <button onClick={() => selectMode('topic-exam')} className="practice-option"><span className="option-icon quiz" style={{ background: '#e0e7ff', color: '#4338ca' }}><ListFilter size={19} /></span><span><strong>Topic Exam</strong><small>Choose topic(s) and game mode</small></span><ChevronRight size={17} /></button>
+                  <button onClick={() => selectMode('topic-exam')} className="practice-option"><span className="option-icon quiz" style={{ background: '#e0e7ff', color: '#4338ca' }}><ListFilter size={19} /></span><span><strong>Topic Exam</strong><small>Topics + Plural, Opposite, Synonym, etc.</small></span><ChevronRight size={17} /></button>
                   <button onClick={() => selectMode('de-en')} className="practice-option"><span className="option-icon quiz"><CircleHelp size={19} /></span><span><strong>German → English</strong><small>Translate German to English</small></span><ChevronRight size={17} /></button>
                   <button onClick={() => selectMode('en-de')} className="practice-option"><span className="option-icon cards"><CircleHelp size={19} /></span><span><strong>English → German</strong><small>Translate English to German</small></span><ChevronRight size={17} /></button>
                   <button onClick={() => selectMode('grammar')} className="practice-option"><span className="option-icon quiz"><Brain size={19} /></span><span><strong>Grammar Check</strong><small>Articles, genders, word types</small></span><ChevronRight size={17} /></button>
@@ -966,7 +977,7 @@ export default function App() {
                 </div>
                 <div className="tip-box">
                   <span className="tip-icon"><Brain size={17} /></span>
-                  <p><strong>Learning tip</strong><br />In Topic Exam, grouping vocabulary helps solidify word associations and recall.</p>
+                  <p><strong>Learning tip</strong><br />Practicing opposites and synonyms builds associative memory networks in German.</p>
                 </div>
               </div>
             </section>
@@ -1028,6 +1039,7 @@ export default function App() {
                       <th>GERMAN</th>
                       <th>ENGLISH</th>
                       <th>TOPIC</th>
+                      <th>DETAILS</th>
                       <th>REVIEW</th>
                     </tr>
                   </thead>
@@ -1037,6 +1049,11 @@ export default function App() {
                         <td><strong className="german-word">{w.german}</strong>{w.plural && <small className="plural-label">Plural: {w.plural}</small>}</td>
                         <td>{w.english}<small className="example-line">{w.example || 'No example sentence yet'}</small></td>
                         <td><span className="topic-pill">{w.topic}</span></td>
+                        <td>
+                          {w.opposite && <span style={{ display: 'block', fontSize: '11px', color: '#dc2626' }}>↔ {w.opposite}</span>}
+                          {w.synonym && <span style={{ display: 'block', fontSize: '11px', color: '#2563eb' }}>≈ {w.synonym}</span>}
+                          {!w.opposite && !w.synonym && <span style={{ fontSize: '11px', opacity: 0.5 }}>—</span>}
+                        </td>
                         <td>{reviews[w.id]?.correctCount >= 4 ? <span className="review-state learned"><Check size={13} /> Learned</span> : dueWords.some(d => d.id === w.id) ? <span className="review-state due">Due</span> : <span className="review-state learning">Learning</span>}</td>
                       </tr>
                     ))}
@@ -1083,7 +1100,7 @@ export default function App() {
                       : quizType === 'match'
                       ? 'Connect 5 German words on the left with their corresponding English translations on the right.'
                       : quizType === 'topic-exam'
-                      ? 'Select your topics, choose your desired game format, and test your vocabulary.'
+                      ? 'Select your topics, choose your desired game format (translations, plural, opposite, synonym, grammar, or match), and test yourself.'
                       : `Questions are drawn in ${quizType === 'de-en' ? 'German → English' : 'English → German'} mode from your due words and vocabulary.`}
                   </p>
 
@@ -1153,7 +1170,7 @@ export default function App() {
 
                       {/* Step 2: Choose Game Mode for Topic Exam */}
                       <div>
-                        <strong style={{ fontSize: '13px', color: '#4b5563', display: 'block', marginBottom: '8px' }}>STEP 2: CHOOSE GAME MODE</strong>
+                        <strong style={{ fontSize: '13px', color: '#4b5563', display: 'block', marginBottom: '8px' }}>STEP 2: CHOOSE GAME FORMAT</strong>
                         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: '8px' }}>
                           <button
                             type="button"
@@ -1195,6 +1212,69 @@ export default function App() {
                             }}
                           >
                             <CircleHelp size={16} /> English → German
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={() => setTopicSubMode('plural')}
+                            style={{
+                              padding: '10px',
+                              borderRadius: '10px',
+                              border: topicSubMode === 'plural' ? '2px solid var(--color-primary)' : '1px solid #d1d5db',
+                              background: topicSubMode === 'plural' ? 'rgba(59, 130, 246, 0.08)' : '#ffffff',
+                              color: topicSubMode === 'plural' ? 'var(--color-primary)' : '#374151',
+                              fontWeight: 600,
+                              fontSize: '13px',
+                              cursor: 'pointer',
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'center',
+                              gap: '6px'
+                            }}
+                          >
+                            <Layers3 size={16} /> Plural Form
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={() => setTopicSubMode('opposite')}
+                            style={{
+                              padding: '10px',
+                              borderRadius: '10px',
+                              border: topicSubMode === 'opposite' ? '2px solid var(--color-primary)' : '1px solid #d1d5db',
+                              background: topicSubMode === 'opposite' ? 'rgba(59, 130, 246, 0.08)' : '#ffffff',
+                              color: topicSubMode === 'opposite' ? 'var(--color-primary)' : '#374151',
+                              fontWeight: 600,
+                              fontSize: '13px',
+                              cursor: 'pointer',
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'center',
+                              gap: '6px'
+                            }}
+                          >
+                            <Split size={16} /> Opposite (Antonym)
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={() => setTopicSubMode('synonym')}
+                            style={{
+                              padding: '10px',
+                              borderRadius: '10px',
+                              border: topicSubMode === 'synonym' ? '2px solid var(--color-primary)' : '1px solid #d1d5db',
+                              background: topicSubMode === 'synonym' ? 'rgba(59, 130, 246, 0.08)' : '#ffffff',
+                              color: topicSubMode === 'synonym' ? 'var(--color-primary)' : '#374151',
+                              fontWeight: 600,
+                              fontSize: '13px',
+                              cursor: 'pointer',
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'center',
+                              gap: '6px'
+                            }}
+                          >
+                            <Shuffle size={16} /> Synonym
                           </button>
 
                           <button
@@ -1386,7 +1466,7 @@ export default function App() {
                   )}
                 </div>
               ) : (
-                /* MULTIPLE CHOICE VIEW (Supports de-en, en-de, grammar, and challenge) */
+                /* MULTIPLE CHOICE VIEW (de-en, en-de, grammar, plural, opposite, synonym) */
                 <div className="panel quiz-panel">
                   <div className="quiz-topline" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%' }}>
                     {quizType === 'challenge' ? (
@@ -1457,6 +1537,12 @@ export default function App() {
                         ? 'IDENTIFY THE GRAMMAR CATEGORY'
                         : activeGameMode === 'en-de'
                         ? 'CHOOSE THE GERMAN TRANSLATION'
+                        : activeGameMode === 'plural'
+                        ? 'CHOOSE THE CORRECT PLURAL FORM'
+                        : activeGameMode === 'opposite'
+                        ? 'CHOOSE THE OPPOSITE (ANTONYM)'
+                        : activeGameMode === 'synonym'
+                        ? 'CHOOSE THE SYNONYM'
                         : 'CHOOSE THE ENGLISH MEANING'}
                     </div>
                     <h2>{promptText}</h2>
@@ -1466,6 +1552,12 @@ export default function App() {
                         ? 'Is this word masculine (der), feminine (die), neuter (das), a verb, or adjective?'
                         : activeGameMode === 'en-de'
                         ? 'What is the correct German word?'
+                        : activeGameMode === 'plural'
+                        ? 'What is the plural form of this word?'
+                        : activeGameMode === 'opposite'
+                        ? 'Which German word means the exact opposite?'
+                        : activeGameMode === 'synonym'
+                        ? 'Which German word has a similar meaning?'
                         : 'What does this word mean in English?'}
                     </p>
                   </div>
