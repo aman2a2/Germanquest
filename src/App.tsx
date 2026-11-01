@@ -481,7 +481,7 @@ async function generateStoryAction() {
     });
     setCurrentStory(story);
   } catch (err: any) {
-    setNotice(err.message || 'Could not generate story. Check your API key.');
+    setNotice(err.message || 'Could not generate story.');
   } finally {
     setIsGeneratingStory(false);
   }
