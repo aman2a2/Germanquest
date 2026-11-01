@@ -18,30 +18,26 @@ export async function generateGermanStory(req: StoryRequest): Promise<StoryRespo
   const apiKey = import.meta.env.VITE_GEMINI_API_KEY;
 
   if (!apiKey) {
-    throw new Error('API key not found. Please add VITE_GEMINI_API_KEY to your .env file and restart the server.');
+    throw new Error('API key not found. Please verify VITE_GEMINI_API_KEY in your Netlify / environment settings.');
   }
 
-  const lengthGuide = req.length === 'Short' ? '~70 words' : req.length === 'Medium' ? '~140 words' : '~220 words';
+  const lengthGuide = req.length === 'Short' ? '50-70 words' : req.length === 'Medium' ? '100-140 words' : '180-220 words';
   const topicList = req.topics.length ? req.topics.join(', ') : 'Everyday life';
   const vocabSample = req.vocabularyWords.map(w => `${w.german} (${w.english})`).join(', ');
 
-  const prompt = `You are a German teacher. Write a short story for a ${req.level} CEFR learner.
+  // Direct, concise instruction without complex JSON constraints for minimum latency
+  const prompt = `Write a short German story for a ${req.level} learner.
 Topics: ${topicList}
-Length: ${lengthGuide}.
-Vocabulary to include naturally: ${vocabSample}.
+Length: ${lengthGuide}
+Include these words with <strong>word</strong> around them: ${vocabSample}
 
-Instructions:
-1. Wrap each used target vocabulary word in <strong>word</strong> tags in the German story text.
-2. Grammar and vocabulary must match CEFR ${req.level}.
-3. Provide an English translation.
-
-Return ONLY a valid JSON object matching this schema without any markdown formatting or backticks:
-{
-  "title": "German title with English meaning in parentheses",
-  "germanText": "The German story with <strong>highlighted</strong> words...",
-  "englishTranslation": "The full English translation...",
-  "wordsUsed": ["der Tisch = table", "laufen = to run"]
-}`;
+Format your output exactly with these three section tags and no other text:
+[TITLE]
+German title (English translation)
+[GERMAN]
+The German story here...
+[ENGLISH]
+The English translation here...`;
 
   const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent?key=${apiKey}`;
 
@@ -51,12 +47,11 @@ Return ONLY a valid JSON object matching this schema without any markdown format
     body: JSON.stringify({
       contents: [{ parts: [{ text: prompt }] }],
       generationConfig: {
-        responseMimeType: 'application/json',
         temperature: 0.7,
-        maxOutputTokens: 1000,
-        // Reduces internal reasoning latency from minutes down to seconds
+        maxOutputTokens: 800,
         thinkingConfig: {
-          thinkingLevel: 'low'
+          thinkingLevel: 'low',
+          thinkingBudget: 0
         }
       }
     })
@@ -68,21 +63,37 @@ Return ONLY a valid JSON object matching this schema without any markdown format
   }
 
   const data = await response.json();
-  const rawText = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+  const rawText = data?.candidates?.[0]?.content?.parts?.[0]?.text || '';
 
-  if (!rawText) {
+  if (!rawText.trim()) {
     throw new Error('The AI model did not return any text.');
   }
 
-  const parsed = JSON.parse(rawText);
+  // Fast parsing via delimiters
+  let title = 'Deutsche Geschichte';
+  let germanText = '';
+  let englishTranslation = '';
+
+  const titleMatch = rawText.match(/\[TITLE\]([\s\S]*?)(?=\[GERMAN\]|$)/i);
+  const germanMatch = rawText.match(/\[GERMAN\]([\s\S]*?)(?=\[ENGLISH\]|$)/i);
+  const englishMatch = rawText.match(/\[ENGLISH\]([\s\S]*?)$/i);
+
+  if (titleMatch && titleMatch[1].trim()) title = titleMatch[1].trim();
+  if (germanMatch && germanMatch[1].trim()) germanText = germanMatch[1].trim();
+  if (englishMatch && englishMatch[1].trim()) englishTranslation = englishMatch[1].trim();
+
+  // Fallback in case the model outputs plain text
+  if (!germanText) {
+    germanText = rawText.replace(/\[TITLE\]|\[GERMAN\]|\[ENGLISH\]/gi, '').trim();
+    englishTranslation = 'Translation available on next generation.';
+  }
+
   return {
-    title: parsed.title || 'Deutsche Geschichte',
-    germanText: parsed.germanText || '',
-    englishTranslation: parsed.englishTranslation || '',
+    title,
+    germanText,
+    englishTranslation,
     level: req.level,
     topics: req.topics.length ? req.topics : ['General'],
-    wordsUsed: Array.isArray(parsed.wordsUsed) && parsed.wordsUsed.length 
-      ? parsed.wordsUsed 
-      : req.vocabularyWords.map(w => `${w.german} = ${w.english}`)
+    wordsUsed: req.vocabularyWords.map(w => `${w.german} = ${w.english}`)
   };
 }
