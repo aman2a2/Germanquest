@@ -18,15 +18,14 @@ export async function generateGermanStory(req: StoryRequest): Promise<StoryRespo
   const apiKey = import.meta.env.VITE_GEMINI_API_KEY;
 
   if (!apiKey) {
-    throw new Error('API key not found. Please verify VITE_GEMINI_API_KEY in your Netlify / environment settings.');
+    throw new Error('API key not found. Please verify VITE_GEMINI_API_KEY in your environment / Netlify settings.');
   }
 
   const lengthGuide = req.length === 'Short' ? '50-70 words' : req.length === 'Medium' ? '100-140 words' : '180-220 words';
   const topicList = req.topics.length ? req.topics.join(', ') : 'Everyday life';
   const vocabSample = req.vocabularyWords.map(w => `${w.german} (${w.english})`).join(', ');
 
-  // Direct, concise instruction without complex JSON constraints for minimum latency
-  const prompt = `Write a short German story for a ${req.level} learner.
+  const prompt = `Write a short German story for a ${req.level} CEFR learner.
 Topics: ${topicList}
 Length: ${lengthGuide}
 Include these words with <strong>word</strong> around them: ${vocabSample}
@@ -50,8 +49,7 @@ The English translation here...`;
         temperature: 0.7,
         maxOutputTokens: 800,
         thinkingConfig: {
-          thinkingLevel: 'low',
-          thinkingBudget: 0
+          thinkingLevel: 'minimal'
         }
       }
     })
@@ -69,7 +67,6 @@ The English translation here...`;
     throw new Error('The AI model did not return any text.');
   }
 
-  // Fast parsing via delimiters
   let title = 'Deutsche Geschichte';
   let germanText = '';
   let englishTranslation = '';
@@ -82,7 +79,6 @@ The English translation here...`;
   if (germanMatch && germanMatch[1].trim()) germanText = germanMatch[1].trim();
   if (englishMatch && englishMatch[1].trim()) englishTranslation = englishMatch[1].trim();
 
-  // Fallback in case the model outputs plain text
   if (!germanText) {
     germanText = rawText.replace(/\[TITLE\]|\[GERMAN\]|\[ENGLISH\]/gi, '').trim();
     englishTranslation = 'Translation available on next generation.';
