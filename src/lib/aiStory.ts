@@ -1,87 +1,132 @@
-export interface StoryRequest {
-  topics: string[];
-  level: 'A1' | 'A2' | 'B1' | 'B2';
-  length: 'Short' | 'Medium' | 'Long';
-  vocabularyWords: { german: string; english: string }[];
-}
 
-export interface StoryResponse {
-  title: string;
-  germanText: string;
-  englishTranslation: string;
-  level: string;
-  topics: string[];
-  wordsUsed: string[];
-}
-
-export async function generateGermanStory(req: StoryRequest): Promise<StoryResponse> {
+export async function generateGermanStory(
+  req: StoryRequest
+): Promise<StoryResponse> {
   const apiKey = import.meta.env.VITE_GEMINI_API_KEY;
 
   if (!apiKey) {
-    throw new Error('API key not found. Please verify VITE_GEMINI_API_KEY in your environment / Netlify settings.');
+    throw new Error("Gemini API key not found.");
   }
 
-  const lengthGuide = req.length === 'Short' ? '50-70 words' : req.length === 'Medium' ? '100-140 words' : '180-220 words';
-  const topicList = req.topics.length ? req.topics.join(', ') : 'Everyday life';
-  const vocabSample = req.vocabularyWords.map(w => `${w.german} (${w.english})`).join(', ');
+  const startedAt = performance.now();
 
-  const prompt = `Write a short German story for a ${req.level} CEFR learner.
+  // Limit vocabulary to keep prompts manageable.
+  const selectedWords = req.vocabularyWords.slice(0, 20);
+
+  const lengthGuide = {
+    Short: "50-70 words",
+    Medium: "100-140 words",
+    Long: "180-220 words"
+  }[req.length];
+
+  const topicList = req.topics.length
+    ? req.topics.join(", ")
+    : "Everyday life";
+
+  const vocabSample = selectedWords
+    .map(w => `${w.german} (${w.english})`)
+    .join(", ");
+
+  const prompt = `
+Write a natural German story for a ${req.level} CEFR learner.
+
 Topics: ${topicList}
 Length: ${lengthGuide}
-Include these words with <strong>word</strong> around them: ${vocabSample}
 
-Format your output exactly with these three section tags and no other text:
+Use these vocabulary words naturally:
+${vocabSample}
+
+Highlight vocabulary with <strong>word</strong>.
+
+Keep sentences and grammar appropriate for ${req.level}.
+Avoid unnecessary introductions and explanations.
+
+Return exactly:
 [TITLE]
-German title (English translation)
-[GERMAN]
-The German story here...
-[ENGLISH]
-The English translation here...`;
+German title
 
-  const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent?key=${apiKey}`;
+[GERMAN]
+German story
+
+[ENGLISH]
+English translation
+`;
+
+  // Lightweight model to benchmark.
+  const model = "gemini-3.5-flash-lite";
+
+  const endpoint =
+    `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
 
   const response = await fetch(endpoint, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
     body: JSON.stringify({
-      contents: [{ parts: [{ text: prompt }] }],
+      contents: [
+        {
+          parts: [{ text: prompt }]
+        }
+      ],
       generationConfig: {
-        temperature: 0.7,
-        maxOutputTokens: 800,
+        temperature: 0.4,
+        maxOutputTokens: 700,
         thinkingConfig: {
-          thinkingLevel: 'minimal'
+          thinkingLevel: "minimal"
         }
       }
     })
   });
 
+  console.log(
+    "Gemini response headers received:",
+    ((performance.now() - startedAt) / 1000).toFixed(2),
+    "seconds"
+  );
+
   if (!response.ok) {
     const errorJson = await response.json().catch(() => null);
-    throw new Error(errorJson?.error?.message || `Google API error (Status ${response.status})`);
+    throw new Error(
+      errorJson?.error?.message ||
+      `Google API error (${response.status})`
+    );
   }
 
   const data = await response.json();
-  const rawText = data?.candidates?.[0]?.content?.parts?.[0]?.text || '';
+
+  const rawText =
+    data?.candidates?.[0]?.content?.parts
+      ?.map((part: { text?: string }) => part.text || "")
+      .join("") || "";
+
+  console.log(
+    "Complete story generated in:",
+    ((performance.now() - startedAt) / 1000).toFixed(2),
+    "seconds"
+  );
 
   if (!rawText.trim()) {
-    throw new Error('The AI model did not return any text.');
+    throw new Error("The AI model returned no text.");
   }
 
-  let title = 'Deutsche Geschichte';
-  let germanText = '';
-  let englishTranslation = '';
+  const extract = (tag: string, nextTag?: string) => {
+    const pattern = nextTag
+      ? new RegExp(
+          `\\[${tag}\\]([\\s\\S]*?)\\[${nextTag}\\]`,
+          "i"
+        )
+      : new RegExp(`\\[${tag}\\]([\\s\\S]*)$`, "i");
 
-  const titleMatch = rawText.match(/\[TITLE\]([\s\S]*?)(?=\[GERMAN\]|$)/i);
-  const germanMatch = rawText.match(/\[GERMAN\]([\s\S]*?)(?=\[ENGLISH\]|$)/i);
-  const englishMatch = rawText.match(/\[ENGLISH\]([\s\S]*?)$/i);
+    return rawText.match(pattern)?.[1]?.trim() || "";
+  };
 
-  if (titleMatch && titleMatch[1].trim()) title = titleMatch[1].trim();
-  if (germanMatch && germanMatch[1].trim()) germanText = germanMatch[1].trim();
-  if (englishMatch && englishMatch[1].trim()) englishTranslation = englishMatch[1].trim();
+  const title = extract("TITLE", "GERMAN") || "Deutsche Geschichte";
+  const germanText = extract("GERMAN", "ENGLISH");
+  const englishTranslation = extract("ENGLISH");
 
   if (!germanText) {
-    germanText = rawText.replace(/\[TITLE\]|\[GERMAN\]|\[ENGLISH\]/gi, '').trim();
-    englishTranslation = 'Translation available on next generation.';
+    throw new Error("Could not extract the German story.");
   }
 
   return {
@@ -89,7 +134,9 @@ The English translation here...`;
     germanText,
     englishTranslation,
     level: req.level,
-    topics: req.topics.length ? req.topics : ['General'],
-    wordsUsed: req.vocabularyWords.map(w => `${w.german} = ${w.english}`)
+    topics: req.topics.length ? req.topics : ["General"],
+    wordsUsed: selectedWords.map(
+      w => `${w.german} = ${w.english}`
+    )
   };
 }
