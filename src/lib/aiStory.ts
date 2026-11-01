@@ -21,19 +21,19 @@ export async function generateGermanStory(req: StoryRequest): Promise<StoryRespo
     throw new Error('API key not found. Please add VITE_GEMINI_API_KEY to your .env file and restart the server.');
   }
 
-  const lengthGuide = req.length === 'Short' ? '~70 words' : req.length === 'Medium' ? '~150 words' : '~250 words';
+  const lengthGuide = req.length === 'Short' ? '~70 words' : req.length === 'Medium' ? '~140 words' : '~220 words';
   const topicList = req.topics.length ? req.topics.join(', ') : 'Everyday life';
   const vocabSample = req.vocabularyWords.map(w => `${w.german} (${w.english})`).join(', ');
 
-  const prompt = `You are a German language teacher. Write a coherent German story tailored for a ${req.level} CEFR learner.
+  const prompt = `You are a German teacher. Write a short story for a ${req.level} CEFR learner.
 Topics: ${topicList}
-Target Length: Approximately ${lengthGuide}.
+Length: ${lengthGuide}.
 Vocabulary to include naturally: ${vocabSample}.
 
-Formatting instructions:
-1. Wrap each used vocabulary word or target phrase in <strong>word</strong> tags in the German story text so it is highlighted.
-2. The vocabulary, sentence structure, and grammar must strictly match CEFR ${req.level} difficulty.
-3. Provide a complete, natural English translation.
+Instructions:
+1. Wrap each used target vocabulary word in <strong>word</strong> tags in the German story text.
+2. Grammar and vocabulary must match CEFR ${req.level}.
+3. Provide an English translation.
 
 Return ONLY a valid JSON object matching this schema without any markdown formatting or backticks:
 {
@@ -43,7 +43,6 @@ Return ONLY a valid JSON object matching this schema without any markdown format
   "wordsUsed": ["der Tisch = table", "laufen = to run"]
 }`;
 
-  // Current active standard Flash model
   const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent?key=${apiKey}`;
 
   const response = await fetch(endpoint, {
@@ -53,7 +52,12 @@ Return ONLY a valid JSON object matching this schema without any markdown format
       contents: [{ parts: [{ text: prompt }] }],
       generationConfig: {
         responseMimeType: 'application/json',
-        temperature: 0.7
+        temperature: 0.7,
+        maxOutputTokens: 1000,
+        // Reduces internal reasoning latency from minutes down to seconds
+        thinkingConfig: {
+          thinkingLevel: 'low'
+        }
       }
     })
   });
