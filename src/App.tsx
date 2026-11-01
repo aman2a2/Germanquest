@@ -1965,6 +1965,26 @@ async function generateStoryAction() {
             <span>{syncing ? 'Syncing…' : cloudEnabled && userEmail ? 'Cloud enabled' : 'Local data saved in this browser'}</span>
           </footer>
         </div>
+        {/* Mobile Bottom Navigation Bar */}
+      <nav className="mobile-bottom-nav">
+        {([
+          { name: 'Home', icon: Home },
+          { name: 'Learn', icon: BookOpen },
+          { name: 'Play', icon: Layers3 },
+          { name: 'AI', icon: Bot },
+          { name: 'Progress', icon: Target }
+        ] as const).map(({ name, icon: Icon }) => (
+          <button
+            key={name}
+            type="button"
+            className={`mobile-nav-btn ${tab === name ? 'active' : ''}`}
+            onClick={() => setTab(name)}
+          >
+            <Icon size={20} />
+            <span>{name}</span>
+          </button>
+        ))}
+      </nav>
       </main>
     </div>
   );
