@@ -43,7 +43,8 @@ Return ONLY a valid JSON object matching this schema without any markdown format
   "wordsUsed": ["der Tisch = table", "laufen = to run"]
 }`;
 
-  const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`;
+  // Using the supported gemini-2.5-flash model on v1beta
+  const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`;
 
   const response = await fetch(endpoint, {
     method: 'POST',
@@ -76,6 +77,8 @@ Return ONLY a valid JSON object matching this schema without any markdown format
     englishTranslation: parsed.englishTranslation || '',
     level: req.level,
     topics: req.topics.length ? req.topics : ['General'],
-    wordsUsed: Array.isArray(parsed.wordsUsed) && parsed.wordsUsed.length ? parsed.wordsUsed : req.vocabularyWords.map(w => `${w.german} = ${w.english}`)
+    wordsUsed: Array.isArray(parsed.wordsUsed) && parsed.wordsUsed.length 
+      ? parsed.wordsUsed 
+      : req.vocabularyWords.map(w => `${w.german} = ${w.english}`)
   };
 }
