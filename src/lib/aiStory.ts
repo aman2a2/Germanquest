@@ -5,45 +5,48 @@ export async function generateGermanStory(
   const apiKey = import.meta.env.VITE_GEMINI_API_KEY;
 
   if (!apiKey) {
-    throw new Error("Gemini API key not found.");
+    throw new Error("Gemini API key is missing.");
   }
 
-  const startedAt = performance.now();
+  const model = "gemini-3.5-flash-lite";
 
-  // Limit vocabulary to keep prompts manageable.
-  const selectedWords = req.vocabularyWords.slice(0, 20);
-
-  const lengthGuide = {
+  const lengthGuide: Record<StoryRequest["length"], string> = {
     Short: "50-70 words",
     Medium: "100-140 words",
     Long: "180-220 words"
-  }[req.length];
+  };
 
-  const topicList = req.topics.length
+  // Limit vocabulary to avoid unnecessarily large prompts.
+  const vocabulary = req.vocabularyWords.slice(0, 20);
+
+  const topics = req.topics.length
     ? req.topics.join(", ")
     : "Everyday life";
 
-  const vocabSample = selectedWords
-    .map(w => `${w.german} (${w.english})`)
+  const words = vocabulary
+    .map(word => `${word.german} (${word.english})`)
     .join(", ");
 
   const prompt = `
-Write a natural German story for a ${req.level} CEFR learner.
+Write a natural German story for a ${req.level} learner.
 
-Topics: ${topicList}
-Length: ${lengthGuide}
+Topics: ${topics}
+Story length: ${lengthGuide[req.length]}
 
-Use these vocabulary words naturally:
-${vocabSample}
+Use these German vocabulary words naturally:
+${words}
 
-Highlight vocabulary with <strong>word</strong>.
+Requirements:
+- Use grammar appropriate for ${req.level}.
+- Highlight selected vocabulary using <strong>word</strong>.
+- Do not force words into unnatural sentences.
+- Write a complete English translation.
+- Do not include explanations outside the requested format.
 
-Keep sentences and grammar appropriate for ${req.level}.
-Avoid unnecessary introductions and explanations.
+Return exactly this format:
 
-Return exactly:
 [TITLE]
-German title
+German story title
 
 [GERMAN]
 German story
@@ -52,26 +55,29 @@ German story
 English translation
 `;
 
-  // Lightweight model to benchmark.
-  const model = "gemini-3.5-flash-lite";
-
   const endpoint =
-    `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
+    `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
+
+  const startTime = Date.now();
 
   const response = await fetch(endpoint, {
     method: "POST",
     headers: {
-      "Content-Type": "application/json"
+      "Content-Type": "application/json",
+      "x-goog-api-key": apiKey
     },
     body: JSON.stringify({
       contents: [
         {
-          parts: [{ text: prompt }]
+          parts: [
+            {
+              text: prompt
+            }
+          ]
         }
       ],
       generationConfig: {
-        temperature: 0.4,
-        maxOutputTokens: 700,
+        maxOutputTokens: 900,
         thinkingConfig: {
           thinkingLevel: "minimal"
         }
@@ -80,53 +86,78 @@ English translation
   });
 
   console.log(
-    "Gemini response headers received:",
-    ((performance.now() - startedAt) / 1000).toFixed(2),
+    "Gemini request time:",
+    ((Date.now() - startTime) / 1000).toFixed(2),
     "seconds"
   );
 
   if (!response.ok) {
-    const errorJson = await response.json().catch(() => null);
+    const errorData = await response.json().catch(() => null);
+
     throw new Error(
-      errorJson?.error?.message ||
-      `Google API error (${response.status})`
+      errorData?.error?.message ||
+      `Gemini API error: ${response.status}`
     );
   }
 
   const data = await response.json();
 
-  const rawText =
+  const rawText: string =
     data?.candidates?.[0]?.content?.parts
       ?.map((part: { text?: string }) => part.text || "")
       .join("") || "";
 
   console.log(
-    "Complete story generated in:",
-    ((performance.now() - startedAt) / 1000).toFixed(2),
+    "Total generation time:",
+    ((Date.now() - startTime) / 1000).toFixed(2),
     "seconds"
   );
 
   if (!rawText.trim()) {
-    throw new Error("The AI model returned no text.");
+    throw new Error("Gemini returned an empty story.");
   }
 
-  const extract = (tag: string, nextTag?: string) => {
-    const pattern = nextTag
-      ? new RegExp(
-          `\\[${tag}\\]([\\s\\S]*?)\\[${nextTag}\\]`,
-          "i"
-        )
-      : new RegExp(`\\[${tag}\\]([\\s\\S]*)$`, "i");
+  // Extract the three sections.
+  const extractSection = (
+    text: string,
+    section: string,
+    nextSection?: string
+  ): string => {
+    const startTag = `[${section}]`;
+    const startIndex = text.indexOf(startTag);
 
-    return rawText.match(pattern)?.[1]?.trim() || "";
+    if (startIndex === -1) {
+      return "";
+    }
+
+    const contentStart = startIndex + startTag.length;
+
+    const endIndex = nextSection
+      ? text.indexOf(`[${nextSection}]`, contentStart)
+      : -1;
+
+    return text
+      .slice(
+        contentStart,
+        endIndex === -1 ? undefined : endIndex
+      )
+      .trim();
   };
 
-  const title = extract("TITLE", "GERMAN") || "Deutsche Geschichte";
-  const germanText = extract("GERMAN", "ENGLISH");
-  const englishTranslation = extract("ENGLISH");
+  const title =
+    extractSection(rawText, "TITLE", "GERMAN") ||
+    "Deutsche Geschichte";
+
+  const germanText =
+    extractSection(rawText, "GERMAN", "ENGLISH");
+
+  const englishTranslation =
+    extractSection(rawText, "ENGLISH");
 
   if (!germanText) {
-    throw new Error("Could not extract the German story.");
+    throw new Error(
+      "Could not extract the German story. Please try again."
+    );
   }
 
   return {
@@ -134,9 +165,11 @@ English translation
     germanText,
     englishTranslation,
     level: req.level,
-    topics: req.topics.length ? req.topics : ["General"],
-    wordsUsed: selectedWords.map(
-      w => `${w.german} = ${w.english}`
+    topics: req.topics.length
+      ? req.topics
+      : ["General"],
+    wordsUsed: vocabulary.map(
+      word => `${word.german} = ${word.english}`
     )
   };
 }
