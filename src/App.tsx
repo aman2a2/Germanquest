@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react';
-import { BookOpen, Brain, Check, ChevronLeft, ChevronRight, CircleHelp, Cloud, Download, Flame, GraduationCap, History, Home, Layers3, Link2, ListFilter, LogIn, LogOut, RefreshCw, RotateCcw, Search, Settings2, Sparkles, Split, Shuffle, Target, Timer, Trophy, User, X } from 'lucide-react';
+import { BookOpen, Bot, Brain, Check, ChevronLeft, ChevronRight, CircleHelp, Cloud, Download, Flame, GraduationCap, History, Home, Layers3, Link2, ListFilter, LogIn, LogOut, RefreshCw, RotateCcw, Search, Settings2, Sparkles, Split, Shuffle, Target, Timer, Trophy, User, X } from 'lucide-react';
 import { cloudEnabled, supabase } from './lib/supabase';
 import { starterWords, type VocabWord } from './lib/words';
 
-type Tab = 'Home' | 'Learn' | 'Play' | 'Progress';
+type Tab = 'Home' | 'Learn' | 'Play' | 'AI' | 'Progress';
 type QuizType = 'de-en' | 'en-de' | 'grammar' | 'match' | 'topic-exam' | 'challenge';
 type TopicExamSubMode = 'de-en' | 'en-de' | 'grammar' | 'match' | 'plural' | 'opposite' | 'synonym';
 type Result = { wordId: string; correct: boolean; date: string };
@@ -16,6 +16,15 @@ type ChallengeRecord = {
   total: number;
   date: string;
 };
+
+interface GeneratedStory {
+  title: string;
+  germanText: string;
+  englishTranslation: string;
+  level: string;
+  topic: string;
+  wordsUsed: string[];
+}
 
 const STORE_KEY = 'wortweise-v1';
 const CHALLENGE_HISTORY_KEY = 'wortweise-challenge-history-v1';
@@ -63,6 +72,7 @@ export default function App() {
   const [goal, setGoal] = useState<number>(() => readStore().goal || 10);
   const [userEmail, setUserEmail] = useState<string | null>(null);
 
+  // Auth state
   const [authEmail, setAuthEmail] = useState('');
   const [authPassword, setAuthPassword] = useState('');
   const [authMessage, setAuthMessage] = useState('');
@@ -90,6 +100,14 @@ export default function App() {
   // Topic Exam Selection State
   const [selectedExamTopics, setSelectedExamTopics] = useState<string[]>([]);
   const [topicSubMode, setTopicSubMode] = useState<TopicExamSubMode>('de-en');
+
+  // AI Story Generator States
+  const [aiTopic, setAiTopic] = useState<string>('All topics');
+  const [aiLevel, setAiLevel] = useState<'A1' | 'A2' | 'B1' | 'B2'>('A1');
+  const [aiLength, setAiLength] = useState<'Short' | 'Medium' | 'Long'>('Short');
+  const [isGeneratingStory, setIsGeneratingStory] = useState(false);
+  const [currentStory, setCurrentStory] = useState<GeneratedStory | null>(null);
+  const [showEnglishTranslation, setShowEnglishTranslation] = useState(false);
 
   // Account dropdown & Modal states
   const [menuOpen, setMenuOpen] = useState(false);
@@ -134,6 +152,7 @@ export default function App() {
     };
   }, []);
 
+  // Challenge Mode Countdown Timer
   useEffect(() => {
     if (!isPlaying || quizType !== 'challenge' || quizDone) return;
     const interval = setInterval(() => {
@@ -359,7 +378,6 @@ export default function App() {
         ? words.filter(w => selectedExamTopics.includes(w.topic))
         : words;
 
-      // Filter by requirement for specialized submodes
       if (topicSubMode === 'plural') {
         filtered = filtered.filter(w => Boolean(w.plural && w.plural.trim()));
       } else if (topicSubMode === 'opposite') {
@@ -369,7 +387,7 @@ export default function App() {
       }
 
       if (!filtered.length) {
-        setNotice(`No words found in the selected topic(s) that have data for "${topicSubMode}".`);
+        setNotice(`No words found in the selected topic(s) with data for "${topicSubMode}".`);
         return;
       }
       baseWords = filtered;
@@ -430,6 +448,32 @@ export default function App() {
     setSelectedRight(null);
     setWrongPair(null);
     setTimeDeltaBadge(null);
+  }
+
+  // AI Story Generator Demo Function (Will be replaced with Gemini/Groq in next step)
+  async function generateStoryAction() {
+    setIsGeneratingStory(true);
+    setShowEnglishTranslation(false);
+    
+    const candidateWords = aiTopic === 'All topics'
+      ? words
+      : words.filter(w => w.topic === aiTopic);
+
+    const pickedWords = candidateWords.sort(() => Math.random() - 0.5).slice(0, 5);
+    const wordListText = pickedWords.map(w => w.german).join(', ');
+
+    // Simulated short response for testing UI before adding API key
+    setTimeout(() => {
+      setCurrentStory({
+        title: `Ein Tag mit ${aiTopic !== 'All topics' ? aiTopic : 'Worten'} (${aiLevel})`,
+        germanText: `Heute ist ein besonderer Tag. Wir lernen Deutsch auf dem Niveau <strong>${aiLevel}</strong>. In dieser Geschichte verwenden wir wichtige Vokabeln wie <strong>${wordListText || 'die Geduld, lernen, sprechen'}</strong>. Es macht viel Spaß, neue Sätze zu bilden und jeden Tag ein bisschen besser zu werden!`,
+        englishTranslation: `Today is a special day. We are learning German at the ${aiLevel} level. In this story, we use key vocabulary such as: ${pickedWords.map(w => `${w.german} (${w.english})`).join(', ') || 'patience, to learn, to speak'}. It is a lot of fun to create new sentences and improve a little bit every day!`,
+        level: aiLevel,
+        topic: aiTopic,
+        wordsUsed: pickedWords.map(w => `${w.german} = ${w.english}`)
+      });
+      setIsGeneratingStory(false);
+    }, 900);
   }
 
   const current = quizWords[quizIndex];
@@ -605,7 +649,13 @@ export default function App() {
         </a>
         <div className="side-label">WORKSPACE</div>
         <nav>
-          {([{ name: 'Home', icon: Home }, { name: 'Learn', icon: BookOpen }, { name: 'Play', icon: Layers3 }, { name: 'Progress', icon: Target }] as const).map(({ name, icon: Icon }) => (
+          {([
+            { name: 'Home', icon: Home },
+            { name: 'Learn', icon: BookOpen },
+            { name: 'Play', icon: Layers3 },
+            { name: 'AI', icon: Bot },
+            { name: 'Progress', icon: Target }
+          ] as const).map(({ name, icon: Icon }) => (
             <button key={name} className={`nav-item ${tab === name ? 'active' : ''}`} onClick={() => setTab(name)}>
               <Icon size={18} />
               {name}
@@ -942,6 +992,7 @@ export default function App() {
                   <span className="muted-text">Choose a game mode</span>
                 </div>
                 <div className="practice-options">
+                  <button onClick={() => setTab('AI')} className="practice-option"><span className="option-icon quiz" style={{ background: '#ede9fe', color: '#7c3aed' }}><Bot size={19} /></span><span><strong>AI Story Studio</strong><small>Generate A1-B2 stories from your words</small></span><ChevronRight size={17} /></button>
                   <button onClick={() => selectMode('challenge')} className="practice-option"><span className="option-icon quiz" style={{ background: '#fef3c7', color: '#d97706' }}><Timer size={19} /></span><span><strong>Challenge Mode</strong><small>Timer countdown · +2s correct / -5s wrong</small></span><ChevronRight size={17} /></button>
                   <button onClick={() => selectMode('topic-exam')} className="practice-option"><span className="option-icon quiz" style={{ background: '#e0e7ff', color: '#4338ca' }}><ListFilter size={19} /></span><span><strong>Topic Exam</strong><small>Topics + Plural, Opposite, Synonym, etc.</small></span><ChevronRight size={17} /></button>
                   <button onClick={() => selectMode('de-en')} className="practice-option"><span className="option-icon quiz"><CircleHelp size={19} /></span><span><strong>German → English</strong><small>Translate German to English</small></span><ChevronRight size={17} /></button>
@@ -977,27 +1028,8 @@ export default function App() {
                 </div>
                 <div className="tip-box">
                   <span className="tip-icon"><Brain size={17} /></span>
-                  <p><strong>Learning tip</strong><br />Practicing opposites and synonyms builds associative memory networks in German.</p>
+                  <p><strong>Learning tip</strong><br />Reading stories in German trains contextual comprehension and natural sentence flow.</p>
                 </div>
-              </div>
-            </section>
-            <section className="panel continue-panel">
-              <div className="panel-head">
-                <div>
-                  <div className="eyebrow">PICK UP WHERE YOU LEFT OFF</div>
-                  <h2>Explore your vocabulary</h2>
-                </div>
-                <button className="text-button" onClick={() => setTab('Learn')}>View all words <ChevronRight size={15} /></button>
-              </div>
-              <div className="topic-grid">
-                {topics.filter(t => t !== 'All topics').slice(0, 4).map((t, i) => (
-                  <button className="topic-card" key={t} onClick={() => { setTopic(t); setTab('Learn'); }}>
-                    <span className={`topic-number tone-${i % 4}`}>0{i + 1}</span>
-                    <strong>{t}</strong>
-                    <small>{words.filter(w => w.topic === t).length} words</small>
-                    <ChevronRight size={16} />
-                  </button>
-                ))}
               </div>
             </section>
           </>}
@@ -1067,6 +1099,165 @@ export default function App() {
               </div>
             </div>
           </>}
+
+          {/* AI STUDIO TAB */}
+          {tab === 'AI' && (
+            <div className="page-content" style={{ padding: 0 }}>
+              <div className="page-title-row">
+                <div>
+                  <div className="eyebrow">SMART READING ASSISTANT</div>
+                  <h1>AI Story Studio<span className="period">.</span></h1>
+                  <p className="subheading">Generate immersive stories based on vocabulary in your database.</p>
+                </div>
+              </div>
+
+              {!currentStory ? (
+                <div className="panel quiz-setup" style={{ maxWidth: '640px', margin: '0 auto', textAlign: 'left' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '8px' }}>
+                    <span className="large-soft-icon" style={{ background: '#ede9fe', color: '#7c3aed' }}><Bot size={26} /></span>
+                    <h2 style={{ margin: 0 }}>Story Generator</h2>
+                  </div>
+                  <p style={{ color: '#6b7280', fontSize: '14px', marginBottom: '20px' }}>
+                    Choose your topic, your German CEFR level, and the desired story length. The AI will weave words from your collection into a personalized reading story.
+                  </p>
+
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '18px' }}>
+                    {/* Step 1: Topic */}
+                    <div>
+                      <strong style={{ fontSize: '13px', color: '#374151', display: 'block', marginBottom: '6px' }}>1. TOPIC VOCABULARY</strong>
+                      <select 
+                        value={aiTopic} 
+                        onChange={e => setAiTopic(e.target.value)}
+                        style={{ width: '100%', padding: '10px 12px', borderRadius: '8px', border: '1px solid #d1d5db' }}
+                      >
+                        {topics.map(t => <option key={t} value={t}>{t}</option>)}
+                      </select>
+                    </div>
+
+                    {/* Step 2: CEFR Level */}
+                    <div>
+                      <strong style={{ fontSize: '13px', color: '#374151', display: 'block', marginBottom: '6px' }}>2. DIFFICULTY LEVEL</strong>
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '8px' }}>
+                        {(['A1', 'A2', 'B1', 'B2'] as const).map(lvl => (
+                          <button
+                            key={lvl}
+                            type="button"
+                            onClick={() => setAiLevel(lvl)}
+                            style={{
+                              padding: '10px',
+                              borderRadius: '8px',
+                              border: aiLevel === lvl ? '2px solid #7c3aed' : '1px solid #d1d5db',
+                              background: aiLevel === lvl ? '#f5f3ff' : '#ffffff',
+                              color: aiLevel === lvl ? '#7c3aed' : '#374151',
+                              fontWeight: 700,
+                              cursor: 'pointer'
+                            }}
+                          >
+                            {lvl}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* Step 3: Length */}
+                    <div>
+                      <strong style={{ fontSize: '13px', color: '#374151', display: 'block', marginBottom: '6px' }}>3. STORY LENGTH</strong>
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '8px' }}>
+                        {([
+                          { key: 'Short', desc: '~70 words' },
+                          { key: 'Medium', desc: '~150 words' },
+                          { key: 'Long', desc: '~250 words' }
+                        ] as const).map(len => (
+                          <button
+                            key={len.key}
+                            type="button"
+                            onClick={() => setAiLength(len.key)}
+                            style={{
+                              padding: '10px',
+                              borderRadius: '8px',
+                              border: aiLength === len.key ? '2px solid #7c3aed' : '1px solid #d1d5db',
+                              background: aiLength === len.key ? '#f5f3ff' : '#ffffff',
+                              color: aiLength === len.key ? '#7c3aed' : '#374151',
+                              fontWeight: 600,
+                              fontSize: '13px',
+                              cursor: 'pointer'
+                            }}
+                          >
+                            <div>{len.key}</div>
+                            <small style={{ opacity: 0.6 }}>{len.desc}</small>
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    <button 
+                      className="button primary" 
+                      onClick={generateStoryAction}
+                      disabled={isGeneratingStory}
+                      style={{ justifyContent: 'center', marginTop: '10px', background: '#7c3aed' }}
+                    >
+                      {isGeneratingStory ? <RefreshCw size={16} className="animate-spin" /> : <Sparkles size={16} />}
+                      {isGeneratingStory ? 'Creating German Story...' : 'Generate Story'}
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                /* STORY READER CARD */
+                <div className="panel" style={{ maxWidth: '680px', margin: '0 auto', textAlign: 'left', lineHeight: '1.7' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+                    <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                      <span className="topic-pill" style={{ background: '#f5f3ff', color: '#7c3aed' }}>Level: {currentStory.level}</span>
+                      <span className="topic-pill">{currentStory.topic}</span>
+                    </div>
+                    <button className="button secondary" onClick={() => setCurrentStory(null)}>
+                      <X size={16} /> New Story
+                    </button>
+                  </div>
+
+                  <h2 style={{ fontSize: '22px', marginBottom: '14px', color: '#111827' }}>{currentStory.title}</h2>
+
+                  {/* German Story Output */}
+                  <div 
+                    style={{ fontSize: '17px', color: '#1f2937', marginBottom: '24px' }}
+                    dangerouslySetInnerHTML={{ __html: currentStory.germanText }} 
+                  />
+
+                  {/* Used Vocabulary tags */}
+                  {currentStory.wordsUsed.length > 0 && (
+                    <div style={{ background: '#f9fafb', padding: '12px 16px', borderRadius: '8px', marginBottom: '20px' }}>
+                      <strong style={{ fontSize: '12px', color: '#6b7280', display: 'block', marginBottom: '6px' }}>KEY VOCABULARY IN STORY:</strong>
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
+                        {currentStory.wordsUsed.map((w, idx) => (
+                          <span key={idx} style={{ fontSize: '12px', background: '#ffffff', padding: '4px 8px', borderRadius: '4px', border: '1px solid #e5e7eb' }}>
+                            {w}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  <hr style={{ border: 'none', borderTop: '1px solid #e5e7eb', margin: '20px 0' }} />
+
+                  {/* English Translation View */}
+                  <div>
+                    <button 
+                      className="text-button" 
+                      onClick={() => setShowEnglishTranslation(prev => !prev)}
+                      style={{ fontWeight: 600, color: '#7c3aed', padding: 0 }}
+                    >
+                      {showEnglishTranslation ? 'Hide English Translation ▲' : 'Show English Translation ▼'}
+                    </button>
+
+                    {showEnglishTranslation && (
+                      <p style={{ marginTop: '12px', color: '#4b5563', fontStyle: 'italic', background: '#faf5ff', padding: '14px', borderRadius: '8px', borderLeft: '3px solid #7c3aed' }}>
+                        {currentStory.englishTranslation}
+                      </p>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
 
           {tab === 'Play' && <>
             <div className="page-title-row">
