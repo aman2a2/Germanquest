@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } 
 import { BookOpen, Bot, Brain, Check, ChevronLeft, ChevronRight, CircleHelp, Cloud, Download, Flame, GraduationCap, History, Home, Layers3, Link2, ListFilter, LogIn, LogOut, RefreshCw, RotateCcw, Search, Settings2, Sparkles, Split, Shuffle, Target, Timer, Trophy, User, X } from 'lucide-react';
 import { cloudEnabled, supabase } from './lib/supabase';
 import { starterWords, type VocabWord } from './lib/words';
+import { generateGermanStory } from './lib/aiStory';
 
 type Tab = 'Home' | 'Learn' | 'Play' | 'AI' | 'Progress';
 type QuizType = 'de-en' | 'en-de' | 'grammar' | 'match' | 'topic-exam' | 'challenge';
@@ -456,31 +457,35 @@ export default function App() {
     setTimeDeltaBadge(null);
   }
 
-  // AI Story Generator Demo Function (Will connect to free Gemini/Groq in next step)
-  async function generateStoryAction() {
-    setIsGeneratingStory(true);
-    setShowEnglishTranslation(false);
-    
-    const candidateWords = selectedAiTopics.length
-      ? words.filter(w => selectedAiTopics.includes(w.topic))
-      : words;
+  // AI Story Generator Function connected to gemini
+async function generateStoryAction() {
+  setIsGeneratingStory(true);
+  setShowEnglishTranslation(false);
+  setNotice('');
 
-    const pickedWords = candidateWords.sort(() => Math.random() - 0.5).slice(0, 6);
-    const wordListText = pickedWords.map(w => w.german).join(', ');
-    const chosenTopicLabel = selectedAiTopics.length ? selectedAiTopics.join(', ') : 'All Topics';
+  const candidateWords = selectedAiTopics.length
+    ? words.filter(w => selectedAiTopics.includes(w.topic))
+    : words;
 
-    setTimeout(() => {
-      setCurrentStory({
-        title: `Ein Tag mit ${selectedAiTopics.length ? selectedAiTopics[0] : 'Worten'} (${aiLevel})`,
-        germanText: `Heute ist ein wunderschöner Tag. Wir lernen Deutsch auf dem Niveau <strong>${aiLevel}</strong>. In dieser Geschichte verwenden wir wichtige Vokabeln aus den Themen <em>${chosenTopicLabel}</em>: <strong>${wordListText || 'die Geduld, lernen, sprechen'}</strong>. Es macht viel Spaß, neue Sätze zu bilden und jeden Tag fließender zu sprechen!`,
-        englishTranslation: `Today is a wonderful day. We are learning German at the ${aiLevel} level. In this story, we use key vocabulary from: ${pickedWords.map(w => `${w.german} (${w.english})`).join(', ') || 'patience, to learn, to speak'}. It is a lot of fun to create new sentences and speak more fluently every day!`,
-        level: aiLevel,
-        topics: selectedAiTopics.length ? selectedAiTopics : ['All Topics'],
-        wordsUsed: pickedWords.map(w => `${w.german} = ${w.english}`)
-      });
-      setIsGeneratingStory(false);
-    }, 900);
+  const pickedWords = [...candidateWords]
+    .sort(() => Math.random() - 0.5)
+    .slice(0, 6)
+    .map(w => ({ german: w.german, english: w.english }));
+
+  try {
+    const story = await generateGermanStory({
+      topics: selectedAiTopics,
+      level: aiLevel,
+      length: aiLength,
+      vocabularyWords: pickedWords
+    });
+    setCurrentStory(story);
+  } catch (err: any) {
+    setNotice(err.message || 'Could not generate story. Check your API key.');
+  } finally {
+    setIsGeneratingStory(false);
   }
+}
 
   const current = quizWords[quizIndex];
 
