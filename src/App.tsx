@@ -22,7 +22,7 @@ interface GeneratedStory {
   germanText: string;
   englishTranslation: string;
   level: string;
-  topic: string;
+  topics: string[];
   wordsUsed: string[];
 }
 
@@ -101,8 +101,8 @@ export default function App() {
   const [selectedExamTopics, setSelectedExamTopics] = useState<string[]>([]);
   const [topicSubMode, setTopicSubMode] = useState<TopicExamSubMode>('de-en');
 
-  // AI Story Generator States
-  const [aiTopic, setAiTopic] = useState<string>('All topics');
+  // AI Story Generator States (Multi-Topic)
+  const [selectedAiTopics, setSelectedAiTopics] = useState<string[]>([]);
   const [aiLevel, setAiLevel] = useState<'A1' | 'A2' | 'B1' | 'B2'>('A1');
   const [aiLength, setAiLength] = useState<'Short' | 'Medium' | 'Long'>('Short');
   const [isGeneratingStory, setIsGeneratingStory] = useState(false);
@@ -367,6 +367,12 @@ export default function App() {
     );
   }
 
+  function toggleAiTopicSelection(t: string) {
+    setSelectedAiTopics(prev =>
+      prev.includes(t) ? prev.filter(item => item !== t) : [...prev, t]
+    );
+  }
+
   function startSession(size = quizSize) {
     if (autoNextTimer.current) clearTimeout(autoNextTimer.current);
     if (badgeTimer.current) clearTimeout(badgeTimer.current);
@@ -450,26 +456,26 @@ export default function App() {
     setTimeDeltaBadge(null);
   }
 
-  // AI Story Generator Demo Function (Will be replaced with Gemini/Groq in next step)
+  // AI Story Generator Demo Function (Will connect to free Gemini/Groq in next step)
   async function generateStoryAction() {
     setIsGeneratingStory(true);
     setShowEnglishTranslation(false);
     
-    const candidateWords = aiTopic === 'All topics'
-      ? words
-      : words.filter(w => w.topic === aiTopic);
+    const candidateWords = selectedAiTopics.length
+      ? words.filter(w => selectedAiTopics.includes(w.topic))
+      : words;
 
-    const pickedWords = candidateWords.sort(() => Math.random() - 0.5).slice(0, 5);
+    const pickedWords = candidateWords.sort(() => Math.random() - 0.5).slice(0, 6);
     const wordListText = pickedWords.map(w => w.german).join(', ');
+    const chosenTopicLabel = selectedAiTopics.length ? selectedAiTopics.join(', ') : 'All Topics';
 
-    // Simulated short response for testing UI before adding API key
     setTimeout(() => {
       setCurrentStory({
-        title: `Ein Tag mit ${aiTopic !== 'All topics' ? aiTopic : 'Worten'} (${aiLevel})`,
-        germanText: `Heute ist ein besonderer Tag. Wir lernen Deutsch auf dem Niveau <strong>${aiLevel}</strong>. In dieser Geschichte verwenden wir wichtige Vokabeln wie <strong>${wordListText || 'die Geduld, lernen, sprechen'}</strong>. Es macht viel Spaß, neue Sätze zu bilden und jeden Tag ein bisschen besser zu werden!`,
-        englishTranslation: `Today is a special day. We are learning German at the ${aiLevel} level. In this story, we use key vocabulary such as: ${pickedWords.map(w => `${w.german} (${w.english})`).join(', ') || 'patience, to learn, to speak'}. It is a lot of fun to create new sentences and improve a little bit every day!`,
+        title: `Ein Tag mit ${selectedAiTopics.length ? selectedAiTopics[0] : 'Worten'} (${aiLevel})`,
+        germanText: `Heute ist ein wunderschöner Tag. Wir lernen Deutsch auf dem Niveau <strong>${aiLevel}</strong>. In dieser Geschichte verwenden wir wichtige Vokabeln aus den Themen <em>${chosenTopicLabel}</em>: <strong>${wordListText || 'die Geduld, lernen, sprechen'}</strong>. Es macht viel Spaß, neue Sätze zu bilden und jeden Tag fließender zu sprechen!`,
+        englishTranslation: `Today is a wonderful day. We are learning German at the ${aiLevel} level. In this story, we use key vocabulary from: ${pickedWords.map(w => `${w.german} (${w.english})`).join(', ') || 'patience, to learn, to speak'}. It is a lot of fun to create new sentences and speak more fluently every day!`,
         level: aiLevel,
-        topic: aiTopic,
+        topics: selectedAiTopics.length ? selectedAiTopics : ['All Topics'],
         wordsUsed: pickedWords.map(w => `${w.german} = ${w.english}`)
       });
       setIsGeneratingStory(false);
@@ -1032,6 +1038,25 @@ export default function App() {
                 </div>
               </div>
             </section>
+            <section className="panel continue-panel">
+              <div className="panel-head">
+                <div>
+                  <div className="eyebrow">PICK UP WHERE YOU LEFT OFF</div>
+                  <h2>Explore your vocabulary</h2>
+                </div>
+                <button className="text-button" onClick={() => setTab('Learn')}>View all words <ChevronRight size={15} /></button>
+              </div>
+              <div className="topic-grid">
+                {topics.filter(t => t !== 'All topics').slice(0, 4).map((t, i) => (
+                  <button className="topic-card" key={t} onClick={() => { setTopic(t); setTab('Learn'); }}>
+                    <span className={`topic-number tone-${i % 4}`}>0{i + 1}</span>
+                    <strong>{t}</strong>
+                    <small>{words.filter(w => w.topic === t).length} words</small>
+                    <ChevronRight size={16} />
+                  </button>
+                ))}
+              </div>
+            </section>
           </>}
 
           {tab === 'Learn' && <>
@@ -1100,7 +1125,7 @@ export default function App() {
             </div>
           </>}
 
-          {/* AI STUDIO TAB */}
+          {/* AI STUDIO TAB (MULTI-TOPIC SELECTION) */}
           {tab === 'AI' && (
             <div className="page-content" style={{ padding: 0 }}>
               <div className="page-title-row">
@@ -1118,20 +1143,69 @@ export default function App() {
                     <h2 style={{ margin: 0 }}>Story Generator</h2>
                   </div>
                   <p style={{ color: '#6b7280', fontSize: '14px', marginBottom: '20px' }}>
-                    Choose your topic, your German CEFR level, and the desired story length. The AI will weave words from your collection into a personalized reading story.
+                    Select one or more topics, choose your German difficulty level, and select the length.
                   </p>
 
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '18px' }}>
-                    {/* Step 1: Topic */}
+                    {/* Step 1: Multi-Topic Selection Checkboxes */}
                     <div>
-                      <strong style={{ fontSize: '13px', color: '#374151', display: 'block', marginBottom: '6px' }}>1. TOPIC VOCABULARY</strong>
-                      <select 
-                        value={aiTopic} 
-                        onChange={e => setAiTopic(e.target.value)}
-                        style={{ width: '100%', padding: '10px 12px', borderRadius: '8px', border: '1px solid #d1d5db' }}
-                      >
-                        {topics.map(t => <option key={t} value={t}>{t}</option>)}
-                      </select>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+                        <strong style={{ fontSize: '13px', color: '#374151' }}>1. SELECT TOPICS ({selectedAiTopics.length ? `${selectedAiTopics.length} selected` : 'All Topics'})</strong>
+                        <div style={{ display: 'flex', gap: '8px' }}>
+                          <button
+                            type="button"
+                            className="text-button"
+                            onClick={() => setSelectedAiTopics([...availableTopics])}
+                          >
+                            Select All
+                          </button>
+                          <button
+                            type="button"
+                            className="text-button"
+                            onClick={() => setSelectedAiTopics([])}
+                          >
+                            Clear
+                          </button>
+                        </div>
+                      </div>
+
+                      <div style={{
+                        display: 'flex',
+                        flexWrap: 'wrap',
+                        gap: '8px',
+                        maxHeight: '160px',
+                        overflowY: 'auto',
+                        padding: '4px'
+                      }}>
+                        {availableTopics.map(t => {
+                          const count = words.filter(w => w.topic === t).length;
+                          const isSelected = selectedAiTopics.includes(t);
+                          return (
+                            <button
+                              key={t}
+                              type="button"
+                              onClick={() => toggleAiTopicSelection(t)}
+                              style={{
+                                padding: '6px 12px',
+                                borderRadius: '20px',
+                                border: isSelected ? '1px solid #7c3aed' : '1px solid #d1d5db',
+                                background: isSelected ? '#f5f3ff' : '#ffffff',
+                                color: isSelected ? '#7c3aed' : '#374151',
+                                fontWeight: isSelected ? 600 : 400,
+                                fontSize: '13px',
+                                cursor: 'pointer',
+                                display: 'flex',
+                                alignItems: 'center',
+                                gap: '6px'
+                              }}
+                            >
+                              {isSelected && <Check size={14} />}
+                              <span>{t}</span>
+                              <small style={{ opacity: 0.6 }}>({count})</small>
+                            </button>
+                          );
+                        })}
+                      </div>
                     </div>
 
                     {/* Step 2: CEFR Level */}
@@ -1205,9 +1279,11 @@ export default function App() {
                 /* STORY READER CARD */
                 <div className="panel" style={{ maxWidth: '680px', margin: '0 auto', textAlign: 'left', lineHeight: '1.7' }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
-                    <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                    <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
                       <span className="topic-pill" style={{ background: '#f5f3ff', color: '#7c3aed' }}>Level: {currentStory.level}</span>
-                      <span className="topic-pill">{currentStory.topic}</span>
+                      {currentStory.topics.map((t, idx) => (
+                        <span key={idx} className="topic-pill">{t}</span>
+                      ))}
                     </div>
                     <button className="button secondary" onClick={() => setCurrentStory(null)}>
                       <X size={16} /> New Story
