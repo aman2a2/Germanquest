@@ -1,12 +1,13 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react';
-import { BookOpen, Bot, Brain, Check, ChevronLeft, ChevronRight, CircleHelp, Cloud, Download, Flame, GraduationCap, History, Home, Layers3, Link2, ListFilter, LogIn, LogOut, RefreshCw, RotateCcw, Search, Settings2, Sparkles, Split, Shuffle, Target, Timer, Trophy, User, X } from 'lucide-react';
+import { BookOpen, Bot, Brain, Check, ChevronLeft, ChevronRight, CircleHelp, Cloud, Download, Edit3, Flame, GraduationCap, History, Home, Layers3, Link2, ListFilter, LogIn, LogOut, RefreshCw, RotateCcw, Search, Settings2, Sparkles, Split, Shuffle, Star, Target, Timer, Trophy, User, X, Zap } from 'lucide-react';
 import { cloudEnabled, supabase } from './lib/supabase';
 import { starterWords, type VocabWord } from './lib/words';
 import { generateGermanStory } from './lib/aiStory';
 
 type Tab = 'Home' | 'Learn' | 'Play' | 'AI' | 'Progress';
-type QuizType = 'de-en' | 'en-de' | 'grammar' | 'match' | 'topic-exam' | 'challenge';
-type TopicExamSubMode = 'de-en' | 'en-de' | 'grammar' | 'match' | 'plural' | 'opposite' | 'synonym';
+type QuizType = 'topic-exam' | 'challenge';
+type TopicExamSubMode = 'de-en' | 'en-de' | 'grammar' | 'match' | 'plural' | 'opposite' | 'synonym' | 'fill-blank' | 'articles';
+type ChallengeSubMode = 'articles' | 'de-en' | 'en-de';
 type Result = { wordId: string; correct: boolean; date: string };
 type Review = { wordId: string; dueAt: string; interval: number; correctCount: number; lastCorrect?: boolean };
 type ChallengeRecord = {
@@ -28,21 +29,26 @@ interface GeneratedStory {
 }
 
 const STORE_KEY = 'wortweise-v1';
+const BOOKMARKS_KEY = 'wortweise-bookmarks-v1';
 const CHALLENGE_HISTORY_KEY = 'wortweise-challenge-history-v1';
 const todayKey = () => new Date().toISOString().slice(0, 10);
 const readStore = () => { try { return JSON.parse(localStorage.getItem(STORE_KEY) || '{}'); } catch { return {}; } };
+const readBookmarks = (): string[] => {
+  try { return JSON.parse(localStorage.getItem(BOOKMARKS_KEY) || '[]'); } catch { return []; }
+};
 const readChallengeHistory = (): ChallengeRecord[] => {
   try { return JSON.parse(localStorage.getItem(CHALLENGE_HISTORY_KEY) || '[]'); } catch { return []; }
 };
-const csvCell = (s: string) => `"${s.replaceAll('"','""')}"`;
+
+const csvCell = (s?: string) => `"${(s || '').replaceAll('"', '""')}"`;
 const exportCsv = (words: (VocabWord & { opposite?: string; synonym?: string })[]) => 
   ['german,english,topic,type,plural,opposite,synonym,example,exampleTranslation', 
-   ...words.map(w => [w.german,w.english,w.topic,w.type||'',w.plural||'',w.opposite||'',w.synonym||'',w.example||'',w.exampleTranslation||''].map(csvCell).join(','))
+   ...words.map(w => [w.german, w.english, w.topic, w.type || '', w.plural || '', w.opposite || '', w.synonym || '', w.example || '', w.exampleTranslation || ''].map(csvCell).join(','))
   ].join('\n');
 
 const getGrammarCategory = (w: VocabWord): string => {
   const t = (w.type || '').toLowerCase();
-  const g = w.german.trim();
+  const g = (w.german || '').trim();
   if (g.startsWith('der ') || t.includes('masculine') || t === 'm' || t === 'maskulin') return 'Noun (Masculine / der)';
   if (g.startsWith('die ') || t.includes('feminine') || t === 'f' || t === 'feminin') return 'Noun (Feminine / die)';
   if (g.startsWith('das ') || t.includes('neuter') || t === 'n' || t === 'neutral') return 'Noun (Neuter / das)';
@@ -52,6 +58,18 @@ const getGrammarCategory = (w: VocabWord): string => {
   if (t.includes('adv') || t === 'adverb') return 'Adverb';
   if (t.includes('plural')) return 'Plural noun';
   return 'Other';
+};
+
+const getArticleOnly = (w: VocabWord): 'der' | 'die' | 'das' | null => {
+  const g = (w.german || '').trim().toLowerCase();
+  if (g.startsWith('der ')) return 'der';
+  if (g.startsWith('die ')) return 'die';
+  if (g.startsWith('das ')) return 'das';
+  const t = (w.type || '').toLowerCase();
+  if (t.includes('masculine') || t === 'm' || t === 'maskulin') return 'der';
+  if (t.includes('feminine') || t === 'f' || t === 'feminin') return 'die';
+  if (t.includes('neuter') || t === 'n' || t === 'neutral') return 'das';
+  return null;
 };
 
 const GRAMMAR_POOL = [
@@ -67,13 +85,18 @@ type FullVocabWord = VocabWord & { opposite?: string; synonym?: string };
 
 export default function App() {
   const [tab, setTab] = useState<Tab>('Home');
-  const [words, setWords] = useState<FullVocabWord[]>(() => readStore().words?.length ? readStore().words : starterWords);
+  const [words, setWords] = useState<FullVocabWord[]>(() => {
+    const s = readStore();
+    return Array.isArray(s.words) && s.words.length ? s.words : starterWords;
+  });
   const [results, setResults] = useState<Result[]>(() => readStore().results || []);
   const [reviews, setReviews] = useState<Record<string, Review>>(() => readStore().reviews || {});
   const [goal, setGoal] = useState<number>(() => readStore().goal || 10);
   const [userEmail, setUserEmail] = useState<string | null>(null);
 
-  // Auth state
+  // Normalized Bookmarks State
+  const [bookmarkedIds, setBookmarkedIds] = useState<string[]>(() => readBookmarks().map(String));
+
   const [authEmail, setAuthEmail] = useState('');
   const [authPassword, setAuthPassword] = useState('');
   const [authMessage, setAuthMessage] = useState('');
@@ -81,16 +104,19 @@ export default function App() {
   const [search, setSearch] = useState('');
   const [topic, setTopic] = useState('All topics');
   const [notice, setNotice] = useState('');
-  const [quizSize, setQuizSize] = useState(10);
+  const [quizSize, setQuizSize] = useState<number>(10);
+
   const [quizWords, setQuizWords] = useState<FullVocabWord[]>([]);
   const [quizIndex, setQuizIndex] = useState(0);
   const [quizChoice, setQuizChoice] = useState<string | null>(null);
   const [quizScore, setQuizScore] = useState(0);
   const [quizDone, setQuizDone] = useState(false);
-  const [quizType, setQuizType] = useState<QuizType>('de-en');
+  const [quizType, setQuizType] = useState<QuizType>('topic-exam');
   const [isPlaying, setIsPlaying] = useState(false);
+  const [typedAnswer, setTypedAnswer] = useState('');
 
   // Challenge Mode State
+  const [challengeSubMode, setChallengeSubMode] = useState<ChallengeSubMode>('articles');
   const [challengeDuration, setChallengeDuration] = useState(60);
   const [timeLeft, setTimeLeft] = useState(60);
   const [challengeTotalAnswered, setChallengeTotalAnswered] = useState(0);
@@ -102,7 +128,7 @@ export default function App() {
   const [selectedExamTopics, setSelectedExamTopics] = useState<string[]>([]);
   const [topicSubMode, setTopicSubMode] = useState<TopicExamSubMode>('de-en');
 
-  // AI Story Generator States (Multi-Topic)
+  // AI Story Generator States
   const [selectedAiTopics, setSelectedAiTopics] = useState<string[]>([]);
   const [aiLevel, setAiLevel] = useState<'A1' | 'A2' | 'B1' | 'B2'>('A1');
   const [aiLength, setAiLength] = useState<'Short' | 'Medium' | 'Long'>('Short');
@@ -110,7 +136,6 @@ export default function App() {
   const [currentStory, setCurrentStory] = useState<GeneratedStory | null>(null);
   const [showEnglishTranslation, setShowEnglishTranslation] = useState(false);
 
-  // Account dropdown & Modal states
   const [menuOpen, setMenuOpen] = useState(false);
   const [showAuthModal, setShowAuthModal] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
@@ -130,6 +155,10 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem(STORE_KEY, JSON.stringify({ words, results, reviews, goal }));
   }, [words, results, reviews, goal]);
+
+  useEffect(() => {
+    localStorage.setItem(BOOKMARKS_KEY, JSON.stringify(bookmarkedIds));
+  }, [bookmarkedIds]);
 
   useEffect(() => {
     localStorage.setItem(CHALLENGE_HISTORY_KEY, JSON.stringify(challengeRecords));
@@ -153,7 +182,7 @@ export default function App() {
     };
   }, []);
 
-  // Challenge Mode Countdown Timer
+  // Challenge Countdown Timer
   useEffect(() => {
     if (!isPlaying || quizType !== 'challenge' || quizDone) return;
     const interval = setInterval(() => {
@@ -170,13 +199,32 @@ export default function App() {
     return () => clearInterval(interval);
   }, [isPlaying, quizType, quizDone, quizScore, challengeTotalAnswered, challengeDuration]);
 
+  const activeGameMode = useMemo(() => {
+    if (quizType === 'challenge') return challengeSubMode;
+    return topicSubMode;
+  }, [quizType, challengeSubMode, topicSubMode]);
+
+  // Keyboard shortcut listener for Ninja-Article mode (Keys: 1, 2, 3)
+  useEffect(() => {
+    if (!isPlaying || activeGameMode !== 'articles' || quizChoice) return;
+
+    function handleKeyDown(e: KeyboardEvent) {
+      if (e.key === '1') answerQuiz('der');
+      else if (e.key === '2') answerQuiz('die');
+      else if (e.key === '3') answerQuiz('das');
+    }
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isPlaying, activeGameMode, quizChoice, quizIndex, quizWords]);
+
   function finishChallenge() {
     setQuizDone(true);
     const correctCount = quizScore;
     const wrongCount = Math.max(0, challengeTotalAnswered - correctCount);
     
     const newRecord: ChallengeRecord = {
-      id: crypto.randomUUID ? crypto.randomUUID() : String(Date.now()),
+      id: typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : String(Date.now()),
       duration: challengeDuration,
       correct: correctCount,
       wrong: wrongCount,
@@ -197,8 +245,48 @@ export default function App() {
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
-  const topics = useMemo(() => ['All topics', ...Array.from(new Set(words.map(w => w.topic))).sort()], [words]);
-  const availableTopics = useMemo(() => Array.from(new Set(words.map(w => w.topic))).filter(Boolean).sort(), [words]);
+  const rawTopics = useMemo(() => Array.from(new Set(words.map(w => w.topic))).filter(Boolean).sort(), [words]);
+  const availableTopics = useMemo(() => ['★ Bookmarked', ...rawTopics], [rawTopics]);
+  const topicsForFilter = useMemo(() => ['All topics', '★ Bookmarked', ...rawTopics], [rawTopics]);
+  
+  // Safe string-normalized bookmark lookup
+  const bookmarkedWords = useMemo(() => {
+    const starSet = new Set(bookmarkedIds.map(String));
+    return words.filter(w => starSet.has(String(w.id)));
+  }, [words, bookmarkedIds]);
+
+  const allNouns = useMemo(() => {
+    return words.filter(w => getArticleOnly(w) !== null);
+  }, [words]);
+
+  async function toggleBookmark(wordId: string | number) {
+    const idStr = String(wordId);
+    const isAdding = !bookmarkedIds.includes(idStr);
+
+    setBookmarkedIds(prev =>
+      isAdding ? [...prev, idStr] : prev.filter(id => id !== idStr)
+    );
+
+    if (supabase && userEmail) {
+      try {
+        const { data: userData } = await supabase.auth.getUser();
+        if (!userData.user) return;
+
+        if (isAdding) {
+          await supabase.from('bookmarks').upsert({
+            user_id: userData.user.id,
+            word_id: idStr
+          });
+        } else {
+          await supabase.from('bookmarks')
+            .delete()
+            .match({ user_id: userData.user.id, word_id: idStr });
+        }
+      } catch (err: any) {
+        console.warn('Failed to sync bookmark to Supabase:', err.message);
+      }
+    }
+  }
 
   const todayResults = results.filter(r => r.date === todayKey());
   const todayLearned = new Set(todayResults.map(r => r.wordId)).size;
@@ -207,11 +295,6 @@ export default function App() {
   const mastered = words.filter(w => (reviews[w.id]?.correctCount || 0) >= 4).length;
   const weekResults = results.filter(r => Date.now() - new Date(r.date).getTime() <= 7 * 86400000);
   const recentDays = Array.from({ length: 7 }, (_, i) => { const d = new Date(); d.setDate(d.getDate() - (6 - i)); return d.toISOString().slice(0, 10); });
-
-  const activeGameMode = useMemo(() => {
-    if (quizType === 'topic-exam') return topicSubMode;
-    return quizType;
-  }, [quizType, topicSubMode]);
 
   async function syncFromCloud() {
     if (!supabase || !userEmail) {
@@ -225,11 +308,17 @@ export default function App() {
       const { data: progressRows, error: pErr } = await supabase.from('word_progress').select('*');
       if (pErr) throw pErr;
 
+      const { data: bookmarkRows } = await supabase.from('bookmarks').select('word_id');
+      if (bookmarkRows) {
+        const cloudBookmarkIds = bookmarkRows.map((r: any) => String(r.word_id));
+        setBookmarkedIds(prev => Array.from(new Set([...prev, ...cloudBookmarkIds])));
+      }
+
       const { data: userData } = await supabase.auth.getUser();
 
       if (wordRows?.length) {
         setWords(wordRows.map((r: any) => ({
-          id: r.id,
+          id: String(r.id),
           german: r.german,
           english: r.english,
           topic: r.topic || 'My vocabulary',
@@ -285,7 +374,7 @@ export default function App() {
         setResults(prev => prev.length >= syncedResults.length ? prev : syncedResults);
       }
 
-      setNotice('Cloud sync active: progress & vocabulary updated.');
+      setNotice('Cloud sync active: bookmarks, progress & vocabulary updated.');
     } catch (e: any) {
       setNotice(`Cloud sync issue: ${e.message || 'check your Supabase setup'}`);
     } finally {
@@ -319,15 +408,15 @@ export default function App() {
   async function signOut() {
     if (supabase) await supabase.auth.signOut();
     setUserEmail(null);
-    setNotice('Signed out. Your local copy remains on this device.');
+    setNotice('Signed out. Local offline copy remains on this device.');
     setMenuOpen(false);
   }
 
   function record(word: FullVocabWord, correct: boolean) {
     const date = todayKey();
-    setResults(prev => [...prev, { wordId: word.id, correct, date }]);
+    setResults(prev => [...prev, { wordId: String(word.id), correct, date }]);
     setReviews(prev => {
-      const old = prev[word.id] || { wordId: word.id, dueAt: date, interval: 0, correctCount: 0 };
+      const old = prev[word.id] || { wordId: String(word.id), dueAt: date, interval: 0, correctCount: 0 };
       const interval = correct ? ([1, 3, 7, 14, 30][Math.min(old.correctCount, 4)] || 30) : 0;
       const due = new Date();
       due.setDate(due.getDate() + (correct ? interval : 0));
@@ -337,16 +426,15 @@ export default function App() {
         void (async () => {
           const { data } = await supabase.auth.getUser();
           if (!data.user) return;
-          const { error } = await supabase.from('word_progress').upsert({
+          await supabase.from('word_progress').upsert({
             user_id: data.user.id,
-            word_id: word.id,
+            word_id: String(word.id),
             due_at: next.dueAt,
             interval_days: next.interval,
             correct_count: next.correctCount,
             last_correct: correct,
             updated_at: new Date().toISOString()
           });
-          if (error) setNotice('Progress saved on this device; cloud progress sync failed: ' + error.message);
         })();
       }
       return { ...prev, [word.id]: next };
@@ -359,13 +447,21 @@ export default function App() {
     setQuizType(type);
     setIsPlaying(false);
     setQuizDone(false);
+    setTypedAnswer('');
     setTab('Play');
   }
 
   function toggleTopicSelection(t: string) {
-    setSelectedExamTopics(prev =>
-      prev.includes(t) ? prev.filter(item => item !== t) : [...prev, t]
-    );
+    if (t === '★ Bookmarked') {
+      // Toggle Bookmarked exclusively to eliminate accidental bleed from other categories
+      setSelectedExamTopics(prev => prev.includes('★ Bookmarked') ? [] : ['★ Bookmarked']);
+      return;
+    }
+    // When selecting normal topics, remove '★ Bookmarked'
+    setSelectedExamTopics(prev => {
+      const clean = prev.filter(item => item !== '★ Bookmarked');
+      return clean.includes(t) ? clean.filter(item => item !== t) : [...clean, t];
+    });
   }
 
   function toggleAiTopicSelection(t: string) {
@@ -374,18 +470,42 @@ export default function App() {
     );
   }
 
-  function startSession(size = quizSize) {
+  // Robust, Leak-Proof Session Starter
+  function startSession() {
     if (autoNextTimer.current) clearTimeout(autoNextTimer.current);
     if (badgeTimer.current) clearTimeout(badgeTimer.current);
 
     let baseWords: FullVocabWord[] = [];
 
-    if (quizType === 'topic-exam') {
-      let filtered = selectedExamTopics.length
-        ? words.filter(w => selectedExamTopics.includes(w.topic))
-        : words;
+    if (quizType === 'challenge') {
+      if (challengeSubMode === 'articles') {
+        baseWords = allNouns;
+      } else {
+        baseWords = words.length ? words : starterWords;
+      }
+    } else {
+      let filtered: FullVocabWord[] = [];
+      const isBookmarkSelected = selectedExamTopics.includes('★ Bookmarked');
 
-      if (topicSubMode === 'plural') {
+      if (isBookmarkSelected) {
+        // Enforce strict string ID matching
+        const starSet = new Set(bookmarkedIds.map(String));
+        filtered = words.filter(w => starSet.has(String(w.id)));
+
+        if (!filtered.length) {
+          setNotice('You do not have any bookmarked words yet. Click the ★ icon in Learn or Quiz first!');
+          return;
+        }
+      } else if (selectedExamTopics.length > 0) {
+        filtered = words.filter(w => selectedExamTopics.includes(w.topic));
+      } else {
+        filtered = [...words];
+      }
+
+      // Mode-specific criteria
+      if (topicSubMode === 'articles') {
+        filtered = filtered.filter(w => getArticleOnly(w) !== null);
+      } else if (topicSubMode === 'plural') {
         filtered = filtered.filter(w => Boolean(w.plural && w.plural.trim()));
       } else if (topicSubMode === 'opposite') {
         filtered = filtered.filter(w => Boolean(w.opposite && w.opposite.trim()));
@@ -394,16 +514,17 @@ export default function App() {
       }
 
       if (!filtered.length) {
-        setNotice(`No words found in the selected topic(s) with data for "${topicSubMode}".`);
+        setNotice(
+          isBookmarkSelected
+            ? `None of your bookmarked words match the format "${topicSubMode}" (e.g., no nouns with articles).`
+            : `No words found matching the format "${topicSubMode}".`
+        );
         return;
       }
       baseWords = filtered;
-    } else {
-      const pool = [...dueWords];
-      baseWords = pool.length ? pool : [...words];
     }
 
-    const targetCount = quizType === 'challenge' ? Math.max(100, words.length * 5) : size;
+    const targetCount = quizType === 'challenge' ? Math.max(120, baseWords.length * 5) : quizSize;
     const activeWords: FullVocabWord[] = [];
     while (activeWords.length < targetCount) {
       const shuffled = [...baseWords].sort(() => Math.random() - 0.5);
@@ -421,6 +542,7 @@ export default function App() {
     setQuizChoice(null);
     setQuizScore(0);
     setQuizDone(false);
+    setTypedAnswer('');
     setChallengeTotalAnswered(0);
     setTimeDeltaBadge(null);
 
@@ -437,8 +559,8 @@ export default function App() {
 
   function initMatchingRound(pool: FullVocabWord[]) {
     const subset = pool.slice(0, 5);
-    setLeftWords(subset.map(w => ({ id: w.id, text: w.german })).sort(() => Math.random() - .5));
-    setRightWords(subset.map(w => ({ id: w.id, text: w.english })).sort(() => Math.random() - .5));
+    setLeftWords(subset.map(w => ({ id: String(w.id), text: w.german })).sort(() => Math.random() - 0.5));
+    setRightWords(subset.map(w => ({ id: String(w.id), text: w.english })).sort(() => Math.random() - 0.5));
     setSelectedLeft(null);
     setSelectedRight(null);
     setMatchedIds([]);
@@ -451,49 +573,58 @@ export default function App() {
     setIsPlaying(false);
     setQuizDone(false);
     setQuizChoice(null);
+    setTypedAnswer('');
     setSelectedLeft(null);
     setSelectedRight(null);
     setWrongPair(null);
     setTimeDeltaBadge(null);
   }
 
-  // AI Story Generator Function connected to gemini
-async function generateStoryAction() {
-  setIsGeneratingStory(true);
-  setShowEnglishTranslation(false);
-  setNotice('');
+  async function generateStoryAction() {
+    setIsGeneratingStory(true);
+    setShowEnglishTranslation(false);
+    setNotice('');
 
-  const candidateWords = selectedAiTopics.length
-    ? words.filter(w => selectedAiTopics.includes(w.topic))
-    : words;
+    const starSet = new Set(bookmarkedIds.map(String));
+    const candidateWords = selectedAiTopics.length
+      ? words.filter(w => {
+          const isStandard = selectedAiTopics.includes(w.topic);
+          const isBookmarked = selectedAiTopics.includes('★ Bookmarked') && starSet.has(String(w.id));
+          return isStandard || isBookmarked;
+        })
+      : words;
 
-  const pickedWords = [...candidateWords]
-    .sort(() => Math.random() - 0.5)
-    .slice(0, 6)
-    .map(w => ({ german: w.german, english: w.english }));
+    const pickedWords = [...candidateWords]
+      .sort(() => Math.random() - 0.5)
+      .slice(0, 6)
+      .map(w => ({ german: w.german, english: w.english }));
 
-  try {
-    const story = await generateGermanStory({
-      topics: selectedAiTopics,
-      level: aiLevel,
-      length: aiLength,
-      vocabularyWords: pickedWords
-    });
-    setCurrentStory(story);
-  } catch (err: any) {
-    setNotice(err.message || 'Could not generate story.');
-  } finally {
-    setIsGeneratingStory(false);
+    try {
+      const story = await generateGermanStory({
+        topics: selectedAiTopics,
+        level: aiLevel,
+        length: aiLength,
+        vocabularyWords: pickedWords
+      });
+      setCurrentStory(story);
+    } catch (err: any) {
+      setNotice(err.message || 'Could not generate story.');
+    } finally {
+      setIsGeneratingStory(false);
+    }
   }
-}
 
   const current = quizWords[quizIndex];
+  const isCurrentBookmarked = current ? bookmarkedIds.includes(String(current.id)) : false;
 
   const promptText = useMemo(() => {
     if (!current) return '';
-    if (activeGameMode === 'en-de') return current.english;
+    if (activeGameMode === 'articles') {
+      return (current.german || '').replace(/^(der|die|das)\s+/i, '');
+    }
+    if (activeGameMode === 'en-de' || activeGameMode === 'fill-blank') return current.english;
     if (activeGameMode === 'grammar') {
-      const g = current.german.trim();
+      const g = (current.german || '').trim();
       if (/^(der|die|das)\s+/i.test(g)) {
         const noun = g.replace(/^(der|die|das)\s+/i, '');
         return noun.charAt(0).toUpperCase() + noun.slice(1);
@@ -505,8 +636,9 @@ async function generateStoryAction() {
 
   const correctAnswer = useMemo(() => {
     if (!current) return '';
+    if (activeGameMode === 'articles') return getArticleOnly(current) || 'der';
     if (activeGameMode === 'de-en' || quizType === 'challenge') return current.english;
-    if (activeGameMode === 'en-de') return current.german;
+    if (activeGameMode === 'en-de' || activeGameMode === 'fill-blank') return current.german;
     if (activeGameMode === 'grammar') return getGrammarCategory(current);
     if (activeGameMode === 'plural') return current.plural || '';
     if (activeGameMode === 'opposite') return current.opposite || '';
@@ -514,12 +646,13 @@ async function generateStoryAction() {
     return current.english;
   }, [current, activeGameMode, quizType]);
 
+  // Choices generation isolated to active quiz words pool
   const choices = useMemo(() => {
-    if (!current) return [];
+    if (!current || activeGameMode === 'fill-blank' || activeGameMode === 'articles') return [];
     if (activeGameMode === 'grammar') {
       const correct = getGrammarCategory(current);
-      const distractors = GRAMMAR_POOL.filter(g => g !== correct).sort(() => Math.random() - .5).slice(0, 3);
-      return [correct, ...distractors].sort(() => Math.random() - .5);
+      const distractors = GRAMMAR_POOL.filter(g => g !== correct).sort(() => Math.random() - 0.5).slice(0, 3);
+      return [correct, ...distractors].sort(() => Math.random() - 0.5);
     }
 
     let key: 'english' | 'german' | 'plural' | 'opposite' | 'synonym' = 'english';
@@ -528,25 +661,34 @@ async function generateStoryAction() {
     if (activeGameMode === 'opposite') key = 'opposite';
     if (activeGameMode === 'synonym') key = 'synonym';
 
-    const candidateWords = (quizType === 'topic-exam' && selectedExamTopics.length)
-      ? words.filter(w => selectedExamTopics.includes(w.topic) && Boolean(w[key]))
+    // Prioritize active quiz words as distractors to prevent outside topic leaks
+    const pool = quizWords.length >= 4
+      ? quizWords.filter(w => Boolean(w[key]))
       : words.filter(w => Boolean(w[key]));
 
-    const pool = candidateWords.length >= 4 ? candidateWords : words.filter(w => Boolean(w[key]));
-
     const otherChoices = pool
-      .filter(w => w.id !== current.id && w[key] !== current[key])
-      .sort(() => Math.random() - .5)
+      .filter(w => String(w.id) !== String(current.id) && w[key] !== current[key])
+      .sort(() => Math.random() - 0.5)
       .slice(0, 3)
       .map(w => w[key] as string);
 
-    return [current[key] as string, ...otherChoices].sort(() => Math.random() - .5);
-  }, [current, quizIndex, words, activeGameMode, quizType, selectedExamTopics]);
+    return [current[key] as string, ...otherChoices].sort(() => Math.random() - 0.5);
+  }, [current, quizIndex, words, quizWords, activeGameMode]);
 
   function answerQuiz(choice: string) {
     if (quizChoice || !current) return;
     setQuizChoice(choice);
-    const ok = choice === correctAnswer;
+
+    let ok = false;
+    if (activeGameMode === 'articles') {
+      ok = choice.toLowerCase() === correctAnswer.toLowerCase();
+    } else if (activeGameMode === 'fill-blank') {
+      const cleanInput = choice.trim().toLowerCase().replace(/\s+/g, ' ');
+      const cleanExpected = correctAnswer.trim().toLowerCase().replace(/\s+/g, ' ');
+      ok = cleanInput === cleanExpected;
+    } else {
+      ok = choice === correctAnswer;
+    }
 
     if (quizType === 'challenge') {
       setChallengeTotalAnswered(prev => prev + 1);
@@ -557,7 +699,7 @@ async function generateStoryAction() {
         showTimeBadge('+2s', '#10b981');
         autoNextTimer.current = setTimeout(() => {
           nextQuestion();
-        }, 350);
+        }, activeGameMode === 'articles' ? 250 : 350);
       } else {
         setTimeLeft(prev => Math.max(0, prev - 5));
         showTimeBadge('-5s', '#ef4444');
@@ -570,7 +712,7 @@ async function generateStoryAction() {
         setQuizScore(s => s + 1);
         autoNextTimer.current = setTimeout(() => {
           nextQuestion();
-        }, 500);
+        }, activeGameMode === 'articles' ? 350 : 600);
       }
     }
 
@@ -593,6 +735,7 @@ async function generateStoryAction() {
     }
     setQuizIndex(i => i + 1);
     setQuizChoice(null);
+    setTypedAnswer('');
   }
 
   function prevQuestion() {
@@ -600,6 +743,7 @@ async function generateStoryAction() {
     if (quizIndex > 0) {
       setQuizIndex(i => i - 1);
       setQuizChoice(null);
+      setTypedAnswer('');
     }
   }
 
@@ -623,7 +767,7 @@ async function generateStoryAction() {
 
   function checkMatch(leftId: string, rightId: string) {
     const isMatch = leftId === rightId;
-    const targetWord = words.find(w => w.id === leftId);
+    const targetWord = words.find(w => String(w.id) === String(leftId));
     if (targetWord) record(targetWord, isMatch);
 
     if (isMatch) {
@@ -650,6 +794,19 @@ async function generateStoryAction() {
     URL.revokeObjectURL(a.href);
     setMenuOpen(false);
   }
+
+  const filteredWords = useMemo(() => {
+    const starSet = new Set(bookmarkedIds.map(String));
+    return words.filter(w => {
+      const matchTopic = topic === 'All topics' 
+        ? true 
+        : topic === '★ Bookmarked' 
+        ? starSet.has(String(w.id)) 
+        : w.topic === topic;
+      const matchSearch = `${w.german} ${w.english} ${w.topic}`.toLowerCase().includes(search.toLowerCase());
+      return matchTopic && matchSearch;
+    });
+  }, [words, topic, bookmarkedIds, search]);
 
   return (
     <div className="app-shell">
@@ -679,10 +836,10 @@ async function generateStoryAction() {
             <span className={`status-dot ${cloudEnabled ? 'green' : ''}`} />
             <div>
               <strong>{cloudEnabled ? 'Cloud setup available' : 'Local preview mode'}</strong>
-              <small>{userEmail || 'Configure sync in setup'}</small>
+              <small>{userEmail || 'Configure sync in avatar menu'}</small>
             </div>
           </div>
-          <button className="nav-item muted" onClick={() => document.getElementById('account')?.scrollIntoView({ behavior: 'smooth' })}>
+          <button className="nav-item muted" onClick={() => setMenuOpen(prev => !prev)}>
             <Settings2 size={18} />Account & sync
           </button>
         </div>
@@ -762,22 +919,13 @@ async function generateStoryAction() {
                     </button>
                   </>
                 ) : (
-                  <>
-                    <button
-                      className="button primary"
-                      style={{ width: '100%', justifyContent: 'center', padding: '8px', fontSize: '13px', margin: '4px 0' }}
-                      onClick={() => { setAuthMessage(''); setShowAuthModal(true); setMenuOpen(false); }}
-                    >
-                      <LogIn size={15} /> Sign In with Password
-                    </button>
-                    <button
-                      className="nav-item"
-                      style={{ width: '100%', justifyContent: 'flex-start', padding: '8px 10px', fontSize: '13px' }}
-                      onClick={() => { document.getElementById('account')?.scrollIntoView({ behavior: 'smooth' }); setMenuOpen(false); }}
-                    >
-                      <Settings2 size={16} /> Cloud Sync Info
-                    </button>
-                  </>
+                  <button
+                    className="button primary"
+                    style={{ width: '100%', justifyContent: 'center', padding: '8px', fontSize: '13px', margin: '4px 0' }}
+                    onClick={() => { setAuthMessage(''); setShowAuthModal(true); setMenuOpen(false); }}
+                  >
+                    <LogIn size={15} /> Sign In with Password
+                  </button>
                 )}
               </div>
             )}
@@ -960,6 +1108,7 @@ async function generateStoryAction() {
 
         <div className="page-content">
           {notice && <div className="notice"><span>{notice}</span><button onClick={() => setNotice('')} aria-label="Dismiss"><X size={15} /></button></div>}
+          
           {tab === 'Home' && <>
             <section className="welcome-row">
               <div>
@@ -967,15 +1116,15 @@ async function generateStoryAction() {
                 <h1>Guten Tag<span className="period">.</span></h1>
                 <p className="subheading">A little practice today goes a long way.</p>
               </div>
-              <button className="button primary" onClick={() => selectMode('de-en')}>
-                <Sparkles size={17} /> Start practice <ChevronRight size={16} />
+              <button className="button primary" onClick={() => selectMode('topic-exam')}>
+                <Sparkles size={17} /> Start Topic Exam <ChevronRight size={16} />
               </button>
             </section>
             <section className="stat-grid">
               <Stat icon={<Flame />} label="Daily streak" value={`${streakLength(results)} days`} hint="Keep your rhythm" tone="amber" />
-              <Stat icon={<BookOpen />} label="Words in library" value={`${words.length}`} hint={`${topics.length - 1} topic collections`} tone="green" />
-              <Stat icon={<Target />} label="Words due" value={`${dueWords.length}`} hint="Ready for a review" tone="blue" />
-              <Stat icon={<Trophy />} label="Accuracy" value={`${accuracy}%`} hint={`${results.length} answers recorded`} tone="violet" />
+              <Stat icon={<BookOpen />} label="Words in library" value={`${words.length}`} hint={`${rawTopics.length} topic collections`} tone="green" />
+              <Stat icon={<Star />} label="Bookmarked" value={`${bookmarkedIds.length}`} hint="Synced across devices" tone="violet" />
+              <Stat icon={<Trophy />} label="Accuracy" value={`${accuracy}%`} hint={`${results.length} answers recorded`} tone="blue" />
             </section>
             <section className="home-grid">
               <div className="panel daily-panel">
@@ -991,7 +1140,7 @@ async function generateStoryAction() {
                   <span> / {goal} words practiced today</span>
                 </div>
                 <div className="progress-track">
-                  <div className="progress-fill" style={{ width: `${Math.min(100, todayLearned / goal * 100)}%` }} />
+                  <div className="progress-fill" style={{ width: `${Math.min(100, (todayLearned / goal) * 100)}%` }} />
                 </div>
                 <div className="goal-footer">
                   <span>{todayLearned >= goal ? 'Daily goal complete — wunderbar!' : `${goal - todayLearned} more to reach your goal`}</span>
@@ -999,17 +1148,25 @@ async function generateStoryAction() {
                 </div>
                 <div className="panel-divider" />
                 <div className="section-mini-head">
-                  <h3>Quick practice</h3>
-                  <span className="muted-text">Choose a game mode</span>
+                  <h3>Practice Modes</h3>
+                  <span className="muted-text">Choose your training format</span>
                 </div>
                 <div className="practice-options">
-                  <button onClick={() => setTab('AI')} className="practice-option"><span className="option-icon quiz" style={{ background: '#ede9fe', color: '#7c3aed' }}><Bot size={19} /></span><span><strong>AI Story Studio</strong><small>Generate A1-B2 stories from your words</small></span><ChevronRight size={17} /></button>
-                  <button onClick={() => selectMode('challenge')} className="practice-option"><span className="option-icon quiz" style={{ background: '#fef3c7', color: '#d97706' }}><Timer size={19} /></span><span><strong>Challenge Mode</strong><small>Timer countdown · +2s correct / -5s wrong</small></span><ChevronRight size={17} /></button>
-                  <button onClick={() => selectMode('topic-exam')} className="practice-option"><span className="option-icon quiz" style={{ background: '#e0e7ff', color: '#4338ca' }}><ListFilter size={19} /></span><span><strong>Topic Exam</strong><small>Topics + Plural, Opposite, Synonym, etc.</small></span><ChevronRight size={17} /></button>
-                  <button onClick={() => selectMode('de-en')} className="practice-option"><span className="option-icon quiz"><CircleHelp size={19} /></span><span><strong>German → English</strong><small>Translate German to English</small></span><ChevronRight size={17} /></button>
-                  <button onClick={() => selectMode('en-de')} className="practice-option"><span className="option-icon cards"><CircleHelp size={19} /></span><span><strong>English → German</strong><small>Translate English to German</small></span><ChevronRight size={17} /></button>
-                  <button onClick={() => selectMode('grammar')} className="practice-option"><span className="option-icon quiz"><Brain size={19} /></span><span><strong>Grammar Check</strong><small>Articles, genders, word types</small></span><ChevronRight size={17} /></button>
-                  <button onClick={() => selectMode('match')} className="practice-option"><span className="option-icon cards"><Link2 size={19} /></span><span><strong>Word Match</strong><small>Match 5 German & English pairs</small></span><ChevronRight size={17} /></button>
+                  <button onClick={() => selectMode('topic-exam')} className="practice-option">
+                    <span className="option-icon quiz" style={{ background: '#e0e7ff', color: '#4338ca' }}><ListFilter size={19} /></span>
+                    <span><strong>Topic Exam</strong><small>Choose any topic or ★ Bookmarked · 9 game formats</small></span>
+                    <ChevronRight size={17} />
+                  </button>
+                  <button onClick={() => selectMode('challenge')} className="practice-option">
+                    <span className="option-icon quiz" style={{ background: '#fef3c7', color: '#d97706' }}><Timer size={19} /></span>
+                    <span><strong>Speed Challenge</strong><small>Ninja-Article & Translation countdowns · +2s / -5s</small></span>
+                    <ChevronRight size={17} />
+                  </button>
+                  <button onClick={() => setTab('AI')} className="practice-option">
+                    <span className="option-icon quiz" style={{ background: '#ede9fe', color: '#7c3aed' }}><Bot size={19} /></span>
+                    <span><strong>AI Story Studio</strong><small>Generate A1-B2 stories from your words</small></span>
+                    <ChevronRight size={17} />
+                  </button>
                 </div>
               </div>
               <div className="panel week-panel">
@@ -1035,31 +1192,12 @@ async function generateStoryAction() {
                 </div>
                 <div className="week-summary">
                   <div><strong>{weekResults.length}</strong><span>answers this week</span></div>
-                  <div><strong>{weekResults.length ? Math.round(weekResults.filter(r => r.correct).length / weekResults.length * 100) : 0}%</strong><span>weekly accuracy</span></div>
+                  <div><strong>{weekResults.length ? Math.round((weekResults.filter(r => r.correct).length / weekResults.length) * 100) : 0}%</strong><span>weekly accuracy</span></div>
                 </div>
                 <div className="tip-box">
-                  <span className="tip-icon"><Brain size={17} /></span>
-                  <p><strong>Learning tip</strong><br />Reading stories in German trains contextual comprehension and natural sentence flow.</p>
+                  <span className="tip-icon"><Star size={17} /></span>
+                  <p><strong>Cloud Bookmarks</strong><br />Any word starred here or during games is instantly synced to your Supabase account.</p>
                 </div>
-              </div>
-            </section>
-            <section className="panel continue-panel">
-              <div className="panel-head">
-                <div>
-                  <div className="eyebrow">PICK UP WHERE YOU LEFT OFF</div>
-                  <h2>Explore your vocabulary</h2>
-                </div>
-                <button className="text-button" onClick={() => setTab('Learn')}>View all words <ChevronRight size={15} /></button>
-              </div>
-              <div className="topic-grid">
-                {topics.filter(t => t !== 'All topics').slice(0, 4).map((t, i) => (
-                  <button className="topic-card" key={t} onClick={() => { setTopic(t); setTab('Learn'); }}>
-                    <span className={`topic-number tone-${i % 4}`}>0{i + 1}</span>
-                    <strong>{t}</strong>
-                    <small>{words.filter(w => w.topic === t).length} words</small>
-                    <ChevronRight size={16} />
-                  </button>
-                ))}
               </div>
             </section>
           </>}
@@ -1076,7 +1214,7 @@ async function generateStoryAction() {
                   className="button primary"
                   onClick={() => void syncFromCloud()}
                   disabled={syncing}
-                  title="Fetch latest words from Supabase"
+                  title="Fetch latest words and bookmarks from Supabase"
                 >
                   <RefreshCw size={16} className={syncing ? 'animate-spin' : ''} /> {syncing ? 'Syncing...' : 'Sync from Cloud'}
                 </button>
@@ -1089,8 +1227,14 @@ async function generateStoryAction() {
                 <input placeholder="Search German or English…" value={search} onChange={e => setSearch(e.target.value)} />
                 {search && <button onClick={() => setSearch('')}><X size={14} /></button>}
               </div>
-              <select value={topic} onChange={e => setTopic(e.target.value)} aria-label="Filter by topic">{topics.map(t => <option key={t}>{t}</option>)}</select>
-              <span className="muted-text result-count">{words.filter(w => (topic === 'All topics' || w.topic === topic) && `${w.german} ${w.english} ${w.topic}`.toLowerCase().includes(search.toLowerCase())).length} words</span>
+              <select value={topic} onChange={e => setTopic(e.target.value)} aria-label="Filter by topic">
+                {topicsForFilter.map(t => (
+                  <option key={t} value={t}>
+                    {t === '★ Bookmarked' ? `★ Bookmarked (${bookmarkedWords.length})` : t}
+                  </option>
+                ))}
+              </select>
+              <span className="muted-text result-count">{filteredWords.length} words</span>
             </div>
 
             <div className="panel vocabulary-panel">
@@ -1098,6 +1242,7 @@ async function generateStoryAction() {
                 <table>
                   <thead>
                     <tr>
+                      <th style={{ width: '40px' }}>★</th>
                       <th>GERMAN</th>
                       <th>ENGLISH</th>
                       <th>TOPIC</th>
@@ -1106,22 +1251,49 @@ async function generateStoryAction() {
                     </tr>
                   </thead>
                   <tbody>
-                    {words.filter(w => (topic === 'All topics' || w.topic === topic) && `${w.german} ${w.english} ${w.topic}`.toLowerCase().includes(search.toLowerCase())).map(w => (
-                      <tr key={w.id}>
-                        <td><strong className="german-word">{w.german}</strong>{w.plural && <small className="plural-label">Plural: {w.plural}</small>}</td>
-                        <td>{w.english}<small className="example-line">{w.example || 'No example sentence yet'}</small></td>
-                        <td><span className="topic-pill">{w.topic}</span></td>
-                        <td>
-                          {w.opposite && <span style={{ display: 'block', fontSize: '11px', color: '#dc2626' }}>↔ {w.opposite}</span>}
-                          {w.synonym && <span style={{ display: 'block', fontSize: '11px', color: '#2563eb' }}>≈ {w.synonym}</span>}
-                          {!w.opposite && !w.synonym && <span style={{ fontSize: '11px', opacity: 0.5 }}>—</span>}
-                        </td>
-                        <td>{reviews[w.id]?.correctCount >= 4 ? <span className="review-state learned"><Check size={13} /> Learned</span> : dueWords.some(d => d.id === w.id) ? <span className="review-state due">Due</span> : <span className="review-state learning">Learning</span>}</td>
-                      </tr>
-                    ))}
+                    {filteredWords.map(w => {
+                      const isStarred = bookmarkedIds.includes(String(w.id));
+                      return (
+                        <tr key={w.id}>
+                          <td>
+                            <button
+                              type="button"
+                              onClick={() => void toggleBookmark(w.id)}
+                              title={isStarred ? 'Remove from bookmarks' : 'Bookmark this word'}
+                              style={{
+                                background: 'transparent',
+                                border: 'none',
+                                cursor: 'pointer',
+                                padding: '4px',
+                                display: 'inline-flex',
+                                alignItems: 'center',
+                                justifyContent: 'center',
+                                color: isStarred ? '#eab308' : '#cbd5e1'
+                              }}
+                            >
+                              <Star size={16} fill={isStarred ? '#eab308' : 'none'} strokeWidth={1.8} />
+                            </button>
+                          </td>
+                          <td><strong className="german-word">{w.german}</strong>{w.plural && <small className="plural-label">Plural: {w.plural}</small>}</td>
+                          <td>{w.english}<small className="example-line">{w.example || 'No example sentence yet'}</small></td>
+                          <td><span className="topic-pill">{w.topic}</span></td>
+                          <td>
+                            {w.opposite && <span style={{ display: 'block', fontSize: '11px', color: '#dc2626' }}>↔ {w.opposite}</span>}
+                            {w.synonym && <span style={{ display: 'block', fontSize: '11px', color: '#2563eb' }}>≈ {w.synonym}</span>}
+                            {!w.opposite && !w.synonym && <span style={{ fontSize: '11px', opacity: 0.5 }}>—</span>}
+                          </td>
+                          <td>{reviews[w.id]?.correctCount >= 4 ? <span className="review-state learned"><Check size={13} /> Learned</span> : dueWords.some(d => String(d.id) === String(w.id)) ? <span className="review-state due">Due</span> : <span className="review-state learning">Learning</span>}</td>
+                        </tr>
+                      );
+                    })}
                   </tbody>
                 </table>
-                {words.length === 0 && <Empty title="Your library is empty" detail="Add words in your Supabase database and click 'Sync from Cloud'." />}
+                {filteredWords.length === 0 && (
+                  <Empty
+                    title={topic === '★ Bookmarked' ? 'No bookmarked words yet' : 'Your library is empty'}
+                    detail={topic === '★ Bookmarked' ? 'Click the small star icon in any question or in this table to bookmark words for quick study.' : 'Add words in your Supabase database and click "Sync from Cloud".'}
+                  />
+                )}
               </div>
               <div className="table-footer">
                 <span>Words are managed in your Supabase SQL database.</span>
@@ -1130,7 +1302,7 @@ async function generateStoryAction() {
             </div>
           </>}
 
-          {/* AI STUDIO TAB (MULTI-TOPIC SELECTION) */}
+          {/* AI STUDIO TAB */}
           {tab === 'AI' && (
             <div className="page-content" style={{ padding: 0 }}>
               <div className="page-title-row">
@@ -1152,7 +1324,6 @@ async function generateStoryAction() {
                   </p>
 
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '18px' }}>
-                    {/* Step 1: Multi-Topic Selection Checkboxes */}
                     <div>
                       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
                         <strong style={{ fontSize: '13px', color: '#374151' }}>1. SELECT TOPICS ({selectedAiTopics.length ? `${selectedAiTopics.length} selected` : 'All Topics'})</strong>
@@ -1183,7 +1354,7 @@ async function generateStoryAction() {
                         padding: '4px'
                       }}>
                         {availableTopics.map(t => {
-                          const count = words.filter(w => w.topic === t).length;
+                          const count = t === '★ Bookmarked' ? bookmarkedIds.length : words.filter(w => w.topic === t).length;
                           const isSelected = selectedAiTopics.includes(t);
                           return (
                             <button
@@ -1213,7 +1384,6 @@ async function generateStoryAction() {
                       </div>
                     </div>
 
-                    {/* Step 2: CEFR Level */}
                     <div>
                       <strong style={{ fontSize: '13px', color: '#374151', display: 'block', marginBottom: '6px' }}>2. DIFFICULTY LEVEL</strong>
                       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '8px' }}>
@@ -1238,14 +1408,13 @@ async function generateStoryAction() {
                       </div>
                     </div>
 
-                    {/* Step 3: Length */}
                     <div>
                       <strong style={{ fontSize: '13px', color: '#374151', display: 'block', marginBottom: '6px' }}>3. STORY LENGTH</strong>
                       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '8px' }}>
                         {([
                           { key: 'Short', desc: '~70 words' },
-                          { key: 'Medium', desc: '~150 words' },
-                          { key: 'Long', desc: '~250 words' }
+                          { key: 'Medium', desc: '~140 words' },
+                          { key: 'Long', desc: '~200 words' }
                         ] as const).map(len => (
                           <button
                             key={len.key}
@@ -1281,7 +1450,6 @@ async function generateStoryAction() {
                   </div>
                 </div>
               ) : (
-                /* STORY READER CARD */
                 <div className="panel" style={{ maxWidth: '680px', margin: '0 auto', textAlign: 'left', lineHeight: '1.7' }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
                     <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
@@ -1297,13 +1465,11 @@ async function generateStoryAction() {
 
                   <h2 style={{ fontSize: '22px', marginBottom: '14px', color: '#111827' }}>{currentStory.title}</h2>
 
-                  {/* German Story Output */}
                   <div 
                     style={{ fontSize: '17px', color: '#1f2937', marginBottom: '24px' }}
                     dangerouslySetInnerHTML={{ __html: currentStory.germanText }} 
                   />
 
-                  {/* Used Vocabulary tags */}
                   {currentStory.wordsUsed.length > 0 && (
                     <div style={{ background: '#f9fafb', padding: '12px 16px', borderRadius: '8px', marginBottom: '20px' }}>
                       <strong style={{ fontSize: '12px', color: '#6b7280', display: 'block', marginBottom: '6px' }}>KEY VOCABULARY IN STORY:</strong>
@@ -1319,7 +1485,6 @@ async function generateStoryAction() {
 
                   <hr style={{ border: 'none', borderTop: '1px solid #e5e7eb', margin: '20px 0' }} />
 
-                  {/* English Translation View */}
                   <div>
                     <button 
                       className="text-button" 
@@ -1340,16 +1505,21 @@ async function generateStoryAction() {
             </div>
           )}
 
+          {/* PLAY TAB */}
           {tab === 'Play' && <>
             <div className="page-title-row">
-              <div><div className="eyebrow">PRACTICE STUDIO</div><h1>Let's practice<span className="period">.</span></h1><p className="subheading">Choose a game mode and test your German skills.</p></div>
+              <div>
+                <div className="eyebrow">PRACTICE STUDIO</div>
+                <h1>Let's practice<span className="period">.</span></h1>
+                <p className="subheading">Choose your mode: configure a custom Topic Exam or jump into Challenge Mode.</p>
+              </div>
               <div className="mode-toggle">
-                <button className={quizType === 'topic-exam' ? 'selected' : ''} onClick={() => selectMode('topic-exam')}><ListFilter size={16} /> Topic Exam</button>
-                <button className={quizType === 'challenge' ? 'selected' : ''} onClick={() => selectMode('challenge')}><Timer size={16} /> Challenge</button>
-                <button className={quizType === 'de-en' ? 'selected' : ''} onClick={() => selectMode('de-en')}><CircleHelp size={16} /> German → English</button>
-                <button className={quizType === 'en-de' ? 'selected' : ''} onClick={() => selectMode('en-de')}><CircleHelp size={16} /> English → German</button>
-                <button className={quizType === 'grammar' ? 'selected' : ''} onClick={() => selectMode('grammar')}><Brain size={16} /> Grammar Check</button>
-                <button className={quizType === 'match' ? 'selected' : ''} onClick={() => selectMode('match')}><Link2 size={16} /> Word Match</button>
+                <button className={quizType === 'topic-exam' ? 'selected' : ''} onClick={() => selectMode('topic-exam')}>
+                  <ListFilter size={16} /> Topic Exam
+                </button>
+                <button className={quizType === 'challenge' ? 'selected' : ''} onClick={() => selectMode('challenge')}>
+                  <Timer size={16} /> Challenge
+                </button>
               </div>
             </div>
 
@@ -1357,29 +1527,27 @@ async function generateStoryAction() {
               {!isPlaying || quizDone ? (
                 <div className="panel quiz-setup">
                   <span className="large-soft-icon">
-                    {quizType === 'challenge' ? <Timer size={26} /> : quizType === 'match' ? <Link2 size={26} /> : quizType === 'grammar' ? <Brain size={26} /> : quizType === 'topic-exam' ? <ListFilter size={26} /> : <GraduationCap size={26} />}
+                    {quizType === 'challenge' ? <Timer size={26} /> : <ListFilter size={26} />}
                   </span>
-                  <h2>{quizDone ? (quizType === 'challenge' ? 'Time is up!' : 'Session complete!') : quizType === 'topic-exam' ? 'Configure Topic Exam' : 'Ready for practice?'}</h2>
+                  <h2>
+                    {quizDone 
+                      ? (quizType === 'challenge' ? 'Time is up!' : 'Session complete!') 
+                      : (quizType === 'challenge' ? 'Speed Challenge Mode' : 'Configure Topic Exam')}
+                  </h2>
                   <p>
                     {quizDone
                       ? quizType === 'challenge'
                         ? `You answered ${quizScore} of ${challengeTotalAnswered} correctly during the countdown!`
-                        : `You scored ${quizScore} points in this session. Keep up the rhythm!`
+                        : `You scored ${quizScore} / ${quizWords.length} correct (${Math.round((quizScore / Math.max(quizWords.length, 1)) * 100)}% accuracy).`
                       : quizType === 'challenge'
-                      ? 'Race against the clock! Correct answers grant +2 seconds, while mistakes subtract -5 seconds. How high can you score?'
-                      : quizType === 'grammar'
-                      ? 'Identify whether the word is Masculine (der), Feminine (die), Neuter (das), a Verb, or Adjective without relying on articles.'
-                      : quizType === 'match'
-                      ? 'Connect 5 German words on the left with their corresponding English translations on the right.'
-                      : quizType === 'topic-exam'
-                      ? 'Select your topics, choose your desired game format (translations, plural, opposite, synonym, grammar, or match), and test yourself.'
-                      : `Questions are drawn in ${quizType === 'de-en' ? 'German → English' : 'English → German'} mode from your due words and vocabulary.`}
+                      ? 'Select your challenge format and time limit. Correct answers add +2 seconds, while mistakes deduct -5 seconds!'
+                      : 'Pick any topic (or ★ Bookmarked), choose your question count and quiz format, and begin.'}
                   </p>
 
-                  {/* Multi-Step Setup for Topic Exam */}
+                  {/* TOPIC EXAM SETUP CONTROLS */}
                   {!quizDone && quizType === 'topic-exam' && (
                     <div style={{ width: '100%', margin: '16px 0', textAlign: 'left', display: 'flex', flexDirection: 'column', gap: '16px' }}>
-                      {/* Step 1: Select Topics */}
+                      {/* Step 1: Multi-Topic Selection */}
                       <div>
                         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
                           <strong style={{ fontSize: '13px', color: '#4b5563' }}>STEP 1: SELECT TOPIC(S)</strong>
@@ -1387,7 +1555,7 @@ async function generateStoryAction() {
                             <button
                               type="button"
                               className="text-button"
-                              onClick={() => setSelectedExamTopics([...availableTopics])}
+                              onClick={() => setSelectedExamTopics([...rawTopics])}
                             >
                               Select All
                             </button>
@@ -1410,8 +1578,9 @@ async function generateStoryAction() {
                           padding: '4px'
                         }}>
                           {availableTopics.map(t => {
-                            const count = words.filter(w => w.topic === t).length;
+                            const count = t === '★ Bookmarked' ? bookmarkedIds.length : words.filter(w => w.topic === t).length;
                             const isSelected = selectedExamTopics.includes(t);
+                            const isBookmarkTab = t === '★ Bookmarked';
                             return (
                               <button
                                 key={t}
@@ -1420,9 +1589,15 @@ async function generateStoryAction() {
                                 style={{
                                   padding: '6px 12px',
                                   borderRadius: '20px',
-                                  border: isSelected ? '1px solid var(--color-primary)' : '1px solid #d1d5db',
-                                  background: isSelected ? 'rgba(59, 130, 246, 0.12)' : '#ffffff',
-                                  color: isSelected ? 'var(--color-primary)' : '#374151',
+                                  border: isSelected 
+                                    ? isBookmarkTab ? '1px solid #eab308' : '1px solid var(--color-primary)' 
+                                    : '1px solid #d1d5db',
+                                  background: isSelected 
+                                    ? isBookmarkTab ? '#fefce8' : 'rgba(59, 130, 246, 0.12)' 
+                                    : '#ffffff',
+                                  color: isSelected 
+                                    ? isBookmarkTab ? '#ca8a04' : 'var(--color-primary)' 
+                                    : '#374151',
                                   fontWeight: isSelected ? 600 : 400,
                                   fontSize: '13px',
                                   cursor: 'pointer',
@@ -1440,10 +1615,31 @@ async function generateStoryAction() {
                         </div>
                       </div>
 
-                      {/* Step 2: Choose Game Mode for Topic Exam */}
+                      {/* Step 2: Choose Game Format */}
                       <div>
                         <strong style={{ fontSize: '13px', color: '#4b5563', display: 'block', marginBottom: '8px' }}>STEP 2: CHOOSE GAME FORMAT</strong>
                         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: '8px' }}>
+                          <button
+                            type="button"
+                            onClick={() => setTopicSubMode('articles')}
+                            style={{
+                              padding: '10px',
+                              borderRadius: '10px',
+                              border: topicSubMode === 'articles' ? '2px solid #1d4ed8' : '1px solid #d1d5db',
+                              background: topicSubMode === 'articles' ? '#eff6ff' : '#ffffff',
+                              color: topicSubMode === 'articles' ? '#1d4ed8' : '#374151',
+                              fontWeight: 700,
+                              fontSize: '13px',
+                              cursor: 'pointer',
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'center',
+                              gap: '6px'
+                            }}
+                          >
+                            <Zap size={16} /> Ninja-Article
+                          </button>
+
                           <button
                             type="button"
                             onClick={() => setTopicSubMode('de-en')}
@@ -1484,6 +1680,27 @@ async function generateStoryAction() {
                             }}
                           >
                             <CircleHelp size={16} /> English → German
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={() => setTopicSubMode('fill-blank')}
+                            style={{
+                              padding: '10px',
+                              borderRadius: '10px',
+                              border: topicSubMode === 'fill-blank' ? '2px solid var(--color-primary)' : '1px solid #d1d5db',
+                              background: topicSubMode === 'fill-blank' ? 'rgba(59, 130, 246, 0.08)' : '#ffffff',
+                              color: topicSubMode === 'fill-blank' ? 'var(--color-primary)' : '#374151',
+                              fontWeight: 600,
+                              fontSize: '13px',
+                              cursor: 'pointer',
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'center',
+                              gap: '6px'
+                            }}
+                          >
+                            <Edit3 size={16} /> Fill in the Blank
                           </button>
 
                           <button
@@ -1595,6 +1812,77 @@ async function generateStoryAction() {
                     </div>
                   )}
 
+                  {/* CHALLENGE MODE SELECTION */}
+                  {!quizDone && quizType === 'challenge' && (
+                    <div style={{ width: '100%', margin: '16px 0', textAlign: 'left', display: 'flex', flexDirection: 'column', gap: '16px' }}>
+                      <div>
+                        <strong style={{ fontSize: '13px', color: '#4b5563', display: 'block', marginBottom: '8px' }}>CHALLENGE GAME FORMAT</strong>
+                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: '8px' }}>
+                          <button
+                            type="button"
+                            onClick={() => setChallengeSubMode('articles')}
+                            style={{
+                              padding: '12px',
+                              borderRadius: '10px',
+                              border: challengeSubMode === 'articles' ? '2px solid #1d4ed8' : '1px solid #d1d5db',
+                              background: challengeSubMode === 'articles' ? '#eff6ff' : '#ffffff',
+                              color: challengeSubMode === 'articles' ? '#1d4ed8' : '#374151',
+                              fontWeight: 700,
+                              fontSize: '13px',
+                              cursor: 'pointer',
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'center',
+                              gap: '6px'
+                            }}
+                          >
+                            <Zap size={16} /> ⚡ Ninja-Article (Der, Die, Das)
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setChallengeSubMode('de-en')}
+                            style={{
+                              padding: '12px',
+                              borderRadius: '10px',
+                              border: challengeSubMode === 'de-en' ? '2px solid var(--color-primary)' : '1px solid #d1d5db',
+                              background: challengeSubMode === 'de-en' ? 'rgba(59, 130, 246, 0.08)' : '#ffffff',
+                              color: challengeSubMode === 'de-en' ? 'var(--color-primary)' : '#374151',
+                              fontWeight: 600,
+                              fontSize: '13px',
+                              cursor: 'pointer',
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'center',
+                              gap: '6px'
+                            }}
+                          >
+                            <CircleHelp size={16} /> German → English
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setChallengeSubMode('en-de')}
+                            style={{
+                              padding: '12px',
+                              borderRadius: '10px',
+                              border: challengeSubMode === 'en-de' ? '2px solid var(--color-primary)' : '1px solid #d1d5db',
+                              background: challengeSubMode === 'en-de' ? 'rgba(59, 130, 246, 0.08)' : '#ffffff',
+                              color: challengeSubMode === 'en-de' ? 'var(--color-primary)' : '#374151',
+                              fontWeight: 600,
+                              fontSize: '13px',
+                              cursor: 'pointer',
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'center',
+                              gap: '6px'
+                            }}
+                          >
+                            <CircleHelp size={16} /> English → German
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
                   {quizDone && (
                     <div className="score-ring">
                       <strong>
@@ -1608,10 +1896,9 @@ async function generateStoryAction() {
 
                   <div className="setup-controls" style={{ flexWrap: 'wrap', justifyContent: 'center' }}>
                     {!quizDone && quizType === 'challenge' && (
-                      <label>Starting Time
+                      <label>Countdown Duration
                         <select value={challengeDuration} onChange={e => setChallengeDuration(Number(e.target.value))}>
                           <option value={30}>30 seconds</option>
-                          <option value={45}>45 seconds</option>
                           <option value={60}>60 seconds (1 min)</option>
                           <option value={90}>90 seconds (1.5 min)</option>
                           <option value={120}>120 seconds (2 min)</option>
@@ -1619,11 +1906,12 @@ async function generateStoryAction() {
                       </label>
                     )}
 
-                    {activeGameMode !== 'match' && quizType !== 'challenge' && (
-                      <label>Questions
+                    {!quizDone && quizType === 'topic-exam' && activeGameMode !== 'match' && (
+                      <label>Number of Questions
                         <select value={quizSize} onChange={e => setQuizSize(Number(e.target.value))}>
                           <option value={5}>5 questions</option>
                           <option value={10}>10 questions</option>
+                          <option value={15}>15 questions</option>
                           <option value={20}>20 questions</option>
                           <option value={30}>30 questions</option>
                         </select>
@@ -1632,7 +1920,7 @@ async function generateStoryAction() {
 
                     <button
                       className="button primary"
-                      onClick={() => startSession(quizSize)}
+                      onClick={startSession}
                       disabled={quizType === 'topic-exam' && !availableTopics.length}
                     >
                       <RotateCcw size={16} />{quizDone ? 'Play again' : 'Start session'} <ChevronRight size={16} />
@@ -1654,7 +1942,9 @@ async function generateStoryAction() {
                 /* MATCHING GAME VIEW */
                 <div className="panel quiz-panel">
                   <div className="quiz-topline" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%' }}>
-                    <span className="topic-pill">{quizType === 'topic-exam' ? 'Topic Match' : 'Word Matching'}</span>
+                    <span className="topic-pill">
+                      {selectedExamTopics.includes('★ Bookmarked') ? '★ Bookmarked Match' : 'Topic Match'}
+                    </span>
                     <span>{matchedIds.length} / 5 PAIRS MATCHED</span>
                     <button
                       className="button secondary"
@@ -1731,14 +2021,191 @@ async function generateStoryAction() {
                   {matchedIds.length === 5 && (
                     <div className="answer-feedback good" style={{ marginTop: '20px' }}>
                       <strong>Ausgezeichnet! All 5 pairs matched!</strong>
-                      <button className="button primary" onClick={() => startSession(quizSize)}>
+                      <button className="button primary" onClick={startSession}>
                         Next Round <ChevronRight size={16} />
                       </button>
                     </div>
                   )}
                 </div>
+              ) : activeGameMode === 'articles' ? (
+                /* NINJA-ARTICLE GAME VIEW */
+                <div className="panel quiz-panel" style={{ maxWidth: '520px', margin: '0 auto', textAlign: 'center' }}>
+                  <div className="quiz-topline" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%' }}>
+                    {quizType === 'challenge' ? (
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                        <div style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '6px',
+                          fontSize: '18px',
+                          fontWeight: 700,
+                          color: timeLeft <= 10 ? '#ef4444' : 'var(--color-primary)'
+                        }}>
+                          <Timer size={20} className={timeLeft <= 10 ? 'animate-bounce' : ''} />
+                          <span>{timeLeft}s</span>
+                          {timeDeltaBadge && (
+                            <span style={{
+                              fontSize: '13px',
+                              padding: '2px 6px',
+                              borderRadius: '6px',
+                              color: '#fff',
+                              backgroundColor: timeDeltaBadge.startsWith('+') ? '#10b981' : '#ef4444'
+                            }}>
+                              {timeDeltaBadge}
+                            </span>
+                          )}
+                        </div>
+                        <span style={{ fontSize: '13px', opacity: 0.8 }}>Score: <strong>{quizScore}</strong></span>
+                      </div>
+                    ) : (
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                        <button
+                          className="button secondary"
+                          style={{ padding: '6px 10px', height: 'auto' }}
+                          disabled={quizIndex === 0}
+                          onClick={prevQuestion}
+                          title="Previous Question"
+                        >
+                          <ChevronLeft size={16} /> Back
+                        </button>
+                        <span className="topic-pill">
+                          {selectedExamTopics.includes('★ Bookmarked') ? '★ Bookmarked Word' : current?.topic}
+                        </span>
+                      </div>
+                    )}
+
+                    <span>{quizType === 'challenge' ? `WORD #${quizIndex + 1}` : `WORD ${quizIndex + 1} OF ${quizWords.length}`}</span>
+
+                    <button
+                      className="button secondary"
+                      style={{ padding: '6px 10px', height: 'auto', color: 'var(--color-text-muted)' }}
+                      onClick={cancelQuiz}
+                      title="Cancel Drill"
+                    >
+                      <X size={16} /> Cancel
+                    </button>
+                  </div>
+
+                  <div className="quiz-progress">
+                    <div style={{
+                      width: quizType === 'challenge'
+                        ? `${Math.min(100, (timeLeft / challengeDuration) * 100)}%`
+                        : `${((quizIndex + 1) / quizWords.length) * 100}%`,
+                      backgroundColor: quizType === 'challenge' && timeLeft <= 10 ? '#ef4444' : '#1d4ed8'
+                    }} />
+                  </div>
+
+                  <div className="question-area" style={{ margin: '24px 0' }}>
+                    <div className="eyebrow" style={{ color: '#6b7280' }}>NINJA-ARTICLE: WHICH ARTICLE BELONGS HERE?</div>
+                    
+                    <div style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: '10px' }}>
+                      <h1 style={{ fontSize: '38px', margin: '8px 0', letterSpacing: '-0.5px' }}>
+                        {promptText}
+                      </h1>
+                      {current && (
+                        <button
+                          type="button"
+                          onClick={() => void toggleBookmark(current.id)}
+                          title={isCurrentBookmarked ? 'Starred - Click to unstar' : 'Click to star/bookmark'}
+                          style={{
+                            background: 'transparent',
+                            border: 'none',
+                            cursor: 'pointer',
+                            padding: '4px',
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            color: isCurrentBookmarked ? '#eab308' : '#9ca3af'
+                          }}
+                        >
+                          <Star size={20} fill={isCurrentBookmarked ? '#eab308' : 'none'} strokeWidth={2} />
+                        </button>
+                      )}
+                    </div>
+
+                    <p style={{ fontSize: '15px', color: '#6b7280', margin: 0 }}>
+                      Meaning: <strong>{current?.english}</strong>
+                    </p>
+                  </div>
+
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '12px', marginBottom: '16px' }}>
+                    {([
+                      { article: 'der', label: 'DER', color: '#1d4ed8', bg: '#eff6ff', key: '1' },
+                      { article: 'die', label: 'DIE', color: '#b91c1c', bg: '#fef2f2', key: '2' },
+                      { article: 'das', label: 'DAS', color: '#15803d', bg: '#f0fdf4', key: '3' }
+                    ] as const).map(btn => {
+                      const isSelected = quizChoice === btn.article;
+                      const isTarget = correctAnswer === btn.article;
+                      let borderStyle = `2px solid ${btn.color}`;
+                      let bgStyle = btn.bg;
+
+                      if (quizChoice) {
+                        if (isTarget) {
+                          bgStyle = '#dcfce7';
+                          borderStyle = '2px solid #16a34a';
+                        } else if (isSelected && !isTarget) {
+                          bgStyle = '#fee2e2';
+                          borderStyle = '2px solid #dc2626';
+                        }
+                      }
+
+                      return (
+                        <button
+                          key={btn.article}
+                          disabled={!!quizChoice}
+                          onClick={() => answerQuiz(btn.article)}
+                          style={{
+                            padding: '18px 8px',
+                            borderRadius: '12px',
+                            border: borderStyle,
+                            background: bgStyle,
+                            color: btn.color,
+                            cursor: quizChoice ? 'default' : 'pointer',
+                            display: 'flex',
+                            flexDirection: 'column',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            gap: '4px',
+                            transition: 'all 0.15s ease'
+                          }}
+                        >
+                          <strong style={{ fontSize: '20px', fontWeight: 800 }}>{btn.label}</strong>
+                          <small style={{ fontSize: '11px', opacity: 0.65 }}>Key {btn.key}</small>
+                        </button>
+                      );
+                    })}
+                  </div>
+
+                  {quizChoice && (
+                    <div style={{
+                      padding: '12px',
+                      borderRadius: '8px',
+                      background: quizChoice.toLowerCase() === correctAnswer.toLowerCase() ? '#f0fdf4' : '#fef2f2',
+                      border: `1px solid ${quizChoice.toLowerCase() === correctAnswer.toLowerCase() ? '#86efac' : '#fca5a5'}`,
+                      marginTop: '8px'
+                    }}>
+                      <strong style={{ color: quizChoice.toLowerCase() === correctAnswer.toLowerCase() ? '#15803d' : '#b91c1c', fontSize: '15px' }}>
+                        {quizChoice.toLowerCase() === correctAnswer.toLowerCase()
+                          ? `✓ Richtig! ${current?.german}`
+                          : `✗ Falsch — ${current?.german}`}
+                        {quizType === 'challenge' && quizChoice.toLowerCase() !== correctAnswer.toLowerCase() && (
+                          <span style={{ color: '#ef4444', marginLeft: '6px' }}>(-5s)</span>
+                        )}
+                      </strong>
+                      {quizType !== 'challenge' && quizChoice.toLowerCase() !== correctAnswer.toLowerCase() && (
+                        <button
+                          className="button primary"
+                          onClick={nextQuestion}
+                          style={{ marginTop: '10px', width: '100%', justifyContent: 'center' }}
+                        >
+                          {quizIndex + 1 === quizWords.length ? 'See results' : 'Next Word'} <ChevronRight size={16} />
+                        </button>
+                      )}
+                    </div>
+                  )}
+                </div>
               ) : (
-                /* MULTIPLE CHOICE VIEW (de-en, en-de, grammar, plural, opposite, synonym) */
+                /* MULTIPLE CHOICE & FILL IN THE BLANK VIEW */
                 <div className="panel quiz-panel">
                   <div className="quiz-topline" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%' }}>
                     {quizType === 'challenge' ? (
@@ -1778,7 +2245,9 @@ async function generateStoryAction() {
                         >
                           <ChevronLeft size={16} /> Back
                         </button>
-                        <span className="topic-pill">{current?.topic}</span>
+                        <span className="topic-pill">
+                          {selectedExamTopics.includes('★ Bookmarked') ? '★ Bookmarked Word' : current?.topic}
+                        </span>
                       </div>
                     )}
 
@@ -1809,6 +2278,8 @@ async function generateStoryAction() {
                         ? 'IDENTIFY THE GRAMMAR CATEGORY'
                         : activeGameMode === 'en-de'
                         ? 'CHOOSE THE GERMAN TRANSLATION'
+                        : activeGameMode === 'fill-blank'
+                        ? 'WRITE THE GERMAN WORD'
                         : activeGameMode === 'plural'
                         ? 'CHOOSE THE CORRECT PLURAL FORM'
                         : activeGameMode === 'opposite'
@@ -1817,13 +2288,46 @@ async function generateStoryAction() {
                         ? 'CHOOSE THE SYNONYM'
                         : 'CHOOSE THE ENGLISH MEANING'}
                     </div>
-                    <h2>{promptText}</h2>
-                    {activeGameMode !== 'grammar' && current?.type && <span className="word-type">{current.type}</span>}
+
+                    <div style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: '8px' }}>
+                      <h2 style={{ margin: 0 }}>{promptText}</h2>
+                      {current && (
+                        <button
+                          type="button"
+                          onClick={() => void toggleBookmark(current.id)}
+                          title={isCurrentBookmarked ? 'Starred (Bookmarked) - Click to unstar' : 'Click to star/bookmark this word'}
+                          style={{
+                            background: 'transparent',
+                            border: 'none',
+                            cursor: 'pointer',
+                            padding: '4px',
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            color: isCurrentBookmarked ? '#eab308' : '#9ca3af',
+                            transition: 'transform 0.15s ease, color 0.15s ease'
+                          }}
+                          onMouseEnter={e => (e.currentTarget.style.transform = 'scale(1.2)')}
+                          onMouseLeave={e => (e.currentTarget.style.transform = 'scale(1)')}
+                        >
+                          <Star size={18} fill={isCurrentBookmarked ? '#eab308' : 'none'} strokeWidth={2} />
+                        </button>
+                      )}
+                    </div>
+
+                    {activeGameMode !== 'grammar' && current?.type && (
+                      <span className="word-type" style={{ display: 'block', marginTop: '4px' }}>{current.type}</span>
+                    )}
+
                     <p>
                       {activeGameMode === 'grammar'
                         ? 'Is this word masculine (der), feminine (die), neuter (das), a verb, or adjective?'
                         : activeGameMode === 'en-de'
                         ? 'What is the correct German word?'
+                        : activeGameMode === 'fill-blank'
+                        ? current?.type?.toLowerCase().includes('noun')
+                          ? 'Type the full German noun including its article (der, die, or das):'
+                          : 'Type the matching German word below:'
                         : activeGameMode === 'plural'
                         ? 'What is the plural form of this word?'
                         : activeGameMode === 'opposite'
@@ -1834,29 +2338,90 @@ async function generateStoryAction() {
                     </p>
                   </div>
 
-                  <div className="answer-list">
-                    {choices.map((choice, i) => (
-                      <button
-                        key={`${choice}-${i}`}
-                        disabled={!!quizChoice}
-                        className={`answer-choice ${quizChoice && choice === correctAnswer ? 'correct' : ''} ${quizChoice === choice && choice !== correctAnswer ? 'incorrect' : ''}`}
-                        onClick={() => answerQuiz(choice)}
-                      >
-                        <span className="choice-letter">{String.fromCharCode(65 + i)}</span>
-                        <span>{choice}</span>
-                        {quizChoice && choice === correctAnswer && <Check size={18} />}
-                      </button>
-                    ))}
-                  </div>
+                  {activeGameMode === 'fill-blank' ? (
+                    <form
+                      onSubmit={(e) => {
+                        e.preventDefault();
+                        if (!typedAnswer.trim()) return;
+                        answerQuiz(typedAnswer.trim());
+                      }}
+                      style={{ display: 'flex', flexDirection: 'column', gap: '14px', width: '100%', maxWidth: '440px', margin: '0 auto' }}
+                    >
+                      <div style={{ display: 'flex', gap: '8px' }}>
+                        <input
+                          type="text"
+                          autoFocus
+                          placeholder={current?.type?.toLowerCase().includes('noun') ? 'e.g. der Tisch' : 'Type German answer...'}
+                          value={typedAnswer}
+                          disabled={!!quizChoice}
+                          onChange={(e) => setTypedAnswer(e.target.value)}
+                          style={{
+                            flex: 1,
+                            padding: '12px 16px',
+                            fontSize: '16px',
+                            borderRadius: '8px',
+                            border: '2px solid #d1d5db',
+                            outline: 'none',
+                            boxSizing: 'border-box'
+                          }}
+                        />
+                        {!quizChoice && (
+                          <button type="submit" className="button primary" style={{ padding: '0 20px' }}>
+                            Check
+                          </button>
+                        )}
+                      </div>
 
-                  {quizChoice && quizChoice !== correctAnswer && (
-                    <div className="answer-feedback bad">
+                      {!quizChoice && (
+                        <div style={{ display: 'flex', gap: '6px', justifyContent: 'center', flexWrap: 'wrap' }}>
+                          {['ä', 'ö', 'ü', 'ß', 'Ä', 'Ö', 'Ü'].map(char => (
+                            <button
+                              key={char}
+                              type="button"
+                              onClick={() => setTypedAnswer(prev => prev + char)}
+                              style={{
+                                padding: '6px 12px',
+                                borderRadius: '6px',
+                                border: '1px solid #d1d5db',
+                                background: '#f9fafb',
+                                cursor: 'pointer',
+                                fontWeight: 600,
+                                fontSize: '14px'
+                              }}
+                            >
+                              {char}
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </form>
+                  ) : (
+                    <div className="answer-list">
+                      {choices.map((choice, i) => (
+                        <button
+                          key={`${choice}-${i}`}
+                          disabled={!!quizChoice}
+                          className={`answer-choice ${quizChoice && choice === correctAnswer ? 'correct' : ''} ${quizChoice === choice && choice !== correctAnswer ? 'incorrect' : ''}`}
+                          onClick={() => answerQuiz(choice)}
+                        >
+                          <span className="choice-letter">{String.fromCharCode(65 + i)}</span>
+                          <span>{choice}</span>
+                          {quizChoice && choice === correctAnswer && <Check size={18} />}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+
+                  {quizChoice && (
+                    <div className={`answer-feedback ${quizChoice.trim().toLowerCase() === correctAnswer.trim().toLowerCase() ? 'good' : 'bad'}`}>
                       <strong>
-                        Not quite — correct answer: {correctAnswer}
+                        {quizChoice.trim().toLowerCase() === correctAnswer.trim().toLowerCase()
+                          ? 'Ausgezeichnet! That is correct.'
+                          : `Not quite — correct answer: ${correctAnswer}`}
                         {activeGameMode === 'grammar' && (
                           <span> (Full word: <em>{current?.german}</em>)</span>
                         )}
-                        {quizType === 'challenge' && (
+                        {quizType === 'challenge' && quizChoice.trim().toLowerCase() !== correctAnswer.trim().toLowerCase() && (
                           <span style={{ color: '#ef4444', marginLeft: '6px' }}>(-5s)</span>
                         )}
                       </strong>
@@ -1864,7 +2429,7 @@ async function generateStoryAction() {
                         <p>{current.example}<br /><span>{current.exampleTranslation}</span></p>
                       )}
                       {quizType !== 'challenge' && (
-                        <button className="button primary" onClick={nextQuestion}>
+                        <button className="button primary" onClick={nextQuestion} style={{ marginTop: '10px' }}>
                           {quizIndex + 1 === quizWords.length ? 'See results' : 'Continue'} <ChevronRight size={16} />
                         </button>
                       )}
@@ -1902,7 +2467,7 @@ async function generateStoryAction() {
               <div className="history-list">
                 {recentDays.slice().reverse().map(d => {
                   const day = results.filter(r => r.date === d);
-                  const pct = day.length ? Math.round(day.filter(r => r.correct).length / day.length * 100) : 0;
+                  const pct = day.length ? Math.round((day.filter(r => r.correct).length / day.length) * 100) : 0;
                   return (
                     <div className="history-row" key={d}>
                       <div className="history-date">
@@ -1925,14 +2490,14 @@ async function generateStoryAction() {
                 </div>
               </div>
               <div className="topic-progress-list">
-                {topics.filter(t => t !== 'All topics').map(t => {
+                {rawTopics.map(t => {
                   const group = words.filter(w => w.topic === t);
                   const learned = group.filter(w => (reviews[w.id]?.correctCount || 0) >= 4).length;
                   return (
                     <div className="topic-progress-row" key={t}>
                       <div><strong>{t}</strong><small>{learned} of {group.length} mastered</small></div>
-                      <div className="progress-track"><div className="progress-fill" style={{ width: `${group.length ? learned / group.length * 100 : 0}%` }} /></div>
-                      <span>{group.length ? Math.round(learned / group.length * 100) : 0}%</span>
+                      <div className="progress-track"><div className="progress-fill" style={{ width: `${group.length ? (learned / group.length) * 100 : 0}%` }} /></div>
+                      <span>{group.length ? Math.round((learned / group.length) * 100) : 0}%</span>
                     </div>
                   );
                 })}
@@ -1940,51 +2505,31 @@ async function generateStoryAction() {
             </div>
           </>}
 
-          <section className="account-panel" id="account">
-            <div className="account-copy">
-              <span className="soft-icon"><Cloud size={19} /></span>
-              <div>
-                <strong>Account & cloud sync</strong>
-                <p>{userEmail ? `Signed in as ${userEmail}. Your app is synced with Supabase.` : 'Sign in with your email and password to sync your vocabulary and review progress across devices.'}</p>
-                {!cloudEnabled && <small>Setup needed: create a Supabase project, run supabase/schema.sql, and add the two VITE_SUPABASE values to .env.local.</small>}
-              </div>
-            </div>
-            {userEmail ? (
-              <button className="button secondary" onClick={() => void signOut()}><LogOut size={16} /> Sign out</button>
-            ) : (
-              <form className="signin-form" onSubmit={e => void handleAuth(e)}>
-                <input type="email" required placeholder="you@example.com" value={authEmail} onChange={e => setAuthEmail(e.target.value)} />
-                <button className="button secondary" type="submit"><LogIn size={16} /> Sign in</button>
-              </form>
-            )}
-            {authMessage && <p className="auth-message">{authMessage}</p>}
-          </section>
-
           <footer>
             <span>wortweise <span className="period">·</span> Your German, one word at a time.</span>
             <span>{syncing ? 'Syncing…' : cloudEnabled && userEmail ? 'Cloud enabled' : 'Local data saved in this browser'}</span>
           </footer>
         </div>
-        {/* Mobile Bottom Navigation Bar */}
-      <nav className="mobile-bottom-nav">
-        {([
-          { name: 'Home', icon: Home },
-          { name: 'Learn', icon: BookOpen },
-          { name: 'Play', icon: Layers3 },
-          { name: 'AI', icon: Bot },
-          { name: 'Progress', icon: Target }
-        ] as const).map(({ name, icon: Icon }) => (
-          <button
-            key={name}
-            type="button"
-            className={`mobile-nav-btn ${tab === name ? 'active' : ''}`}
-            onClick={() => setTab(name)}
-          >
-            <Icon size={20} />
-            <span>{name}</span>
-          </button>
-        ))}
-      </nav>
+
+        <nav className="mobile-bottom-nav">
+          {([
+            { name: 'Home', icon: Home },
+            { name: 'Learn', icon: BookOpen },
+            { name: 'Play', icon: Layers3 },
+            { name: 'AI', icon: Bot },
+            { name: 'Progress', icon: Target }
+          ] as const).map(({ name, icon: Icon }) => (
+            <button
+              key={name}
+              type="button"
+              className={`mobile-nav-btn ${tab === name ? 'active' : ''}`}
+              onClick={() => setTab(name)}
+            >
+              <Icon size={20} />
+              <span>{name}</span>
+            </button>
+          ))}
+        </nav>
       </main>
     </div>
   );
