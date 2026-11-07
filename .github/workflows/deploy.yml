@@ -16,6 +16,20 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+      - name: Check Supabase configuration
+        run: |
+          if [ -z "$VITE_SUPABASE_URL" ]; then
+            echo "ERROR: Supabase URL is missing"
+            exit 1
+          fi
+          if [ -z "$VITE_SUPABASE_ANON_KEY" ]; then
+            echo "ERROR: Supabase anon key is missing"
+            exit 1
+          fi
+          echo "Both Supabase variables are available"
+        env:
+          VITE_SUPABASE_URL: ${{ vars.VITE_SUPABASE_URL }}
+          VITE_SUPABASE_ANON_KEY: ${{ vars.VITE_SUPABASE_ANON_KEY }}
   build:
     runs-on: ubuntu-latest
 
