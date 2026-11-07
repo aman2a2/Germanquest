@@ -2137,7 +2137,8 @@ export default function App() {
                       const isSelected = quizChoice === btn.article;
                       const isTarget = correctAnswer === btn.article;
                       let borderStyle = `2px solid ${btn.color}`;
-                      let bgStyle = btn.bg;
+                      //let bgStyle = btn.bg;
+                      let bgStyle: string = btn.bg;
 
                       if (quizChoice) {
                         if (isTarget) {
